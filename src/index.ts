@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -23,7 +21,7 @@ export default function createServer({
 }: {
   config: z.infer<typeof configSchema>;
 }) {
-  // Initialize services with config
+  // Initialize services with config (lazy initialization)
   const storageConfig: CloudStorageConfig = {
     endpoint: config.s3Endpoint,
     region: config.s3Region,
@@ -33,8 +31,19 @@ export default function createServer({
     publicUrlBase: config.s3PublicUrlBase,
   };
 
-  const storageService = new CloudStorageService(storageConfig);
-  const downloaderService = new VideoDownloaderService(storageService);
+  // Don't initialize services during server creation to avoid startup delays
+  let storageService: CloudStorageService | null = null;
+  let downloaderService: VideoDownloaderService | null = null;
+
+  function getServices() {
+    if (!storageService) {
+      storageService = new CloudStorageService(storageConfig);
+    }
+    if (!downloaderService) {
+      downloaderService = new VideoDownloaderService(storageService);
+    }
+    return { storageService, downloaderService };
+  }
 
   // Create MCP server
   const server = new McpServer({
@@ -42,7 +51,7 @@ export default function createServer({
     version: '1.0.0',
   });
 
-  // Register test connection tool
+  // Register test connection tool (no dependencies needed)
   server.registerTool(
     'test_connection',
     {
@@ -55,6 +64,11 @@ export default function createServer({
         success: true,
         message: 'MCP Video Cloud Server is working!',
         timestamp: new Date().toISOString(),
+        config: {
+          endpoint: config.s3Endpoint,
+          region: config.s3Region,
+          bucket: config.s3BucketName,
+        }
       };
     }
   );
@@ -72,14 +86,9 @@ export default function createServer({
     },
     async ({ url, quality = 'best' }) => {
       try {
+        const { downloaderService } = getServices();
         const result = await downloaderService.downloadVideo(url, quality);
-        return {
-          success: true,
-          url: result.url,
-          filename: result.filename,
-          size: result.size,
-          metadata: result.metadata,
-        };
+        return result;
       } catch (error) {
         return {
           success: false,
@@ -101,14 +110,9 @@ export default function createServer({
     },
     async ({ url }) => {
       try {
+        const { downloaderService } = getServices();
         const result = await downloaderService.downloadAudio(url);
-        return {
-          success: true,
-          url: result.url,
-          filename: result.filename,
-          size: result.size,
-          metadata: result.metadata,
-        };
+        return result;
       } catch (error) {
         return {
           success: false,
@@ -131,13 +135,9 @@ export default function createServer({
     },
     async ({ url, language = 'en' }) => {
       try {
+        const { downloaderService } = getServices();
         const result = await downloaderService.extractTranscript(url, language);
-        return {
-          success: true,
-          url: result.url,
-          filename: result.filename,
-          preview: result.content,
-        };
+        return result;
       } catch (error) {
         return {
           success: false,
@@ -159,12 +159,9 @@ export default function createServer({
     },
     async ({ url }) => {
       try {
+        const { downloaderService } = getServices();
         const result = await downloaderService.extractThumbnail(url);
-        return {
-          success: true,
-          url: result.url,
-          filename: result.filename,
-        };
+        return result;
       } catch (error) {
         return {
           success: false,
@@ -186,6 +183,7 @@ export default function createServer({
     },
     async ({ url }) => {
       try {
+        const { downloaderService } = getServices();
         const metadata = await downloaderService.getVideoMetadata(url);
         return {
           success: true,
