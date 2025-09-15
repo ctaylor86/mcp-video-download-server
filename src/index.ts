@@ -250,8 +250,8 @@ async function main() {
   }
 }
 
-// Run main function if this file is executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run main function if this file is executed directly (CommonJS compatible)
+if (require.main === module) {
   main().catch((error) => {
     console.error('Unhandled error:', error);
     process.exit(1);
