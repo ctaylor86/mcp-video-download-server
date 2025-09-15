@@ -201,9 +201,14 @@ export default function createServer({
   return server.server;
 }
 
-// STDIO support for backward compatibility and local development
+// STDIO support for backward compatibility and local development ONLY
 async function main() {
-  // Get configuration from environment variables
+  // This function is ONLY for local development with STDIO
+  // Smithery uses the createServer function directly, not this main function
+  
+  console.error('Starting MCP Video Cloud Server in STDIO mode (local development)');
+  
+  // Get configuration from environment variables (local development only)
   const config = {
     s3Endpoint: process.env.S3_ENDPOINT!,
     s3Region: process.env.S3_REGION!,
@@ -213,7 +218,7 @@ async function main() {
     s3PublicUrlBase: process.env.S3_PUBLIC_URL_BASE,
   };
 
-  // Validate required environment variables
+  // Validate required environment variables (local development only)
   const requiredEnvVars = [
     'S3_ENDPOINT',
     'S3_REGION', 
@@ -224,7 +229,8 @@ async function main() {
 
   const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
   if (missingVars.length > 0) {
-    console.error('Missing required environment variables:', missingVars.join(', '));
+    console.error('Missing required environment variables for local development:', missingVars.join(', '));
+    console.error('Note: When deployed to Smithery, configuration is passed directly to createServer()');
     process.exit(1);
   }
 
@@ -241,17 +247,19 @@ async function main() {
     // Connect server to transport
     await serverInstance.connect(transport);
     
-    console.error('MCP Video Cloud Server running on stdio');
+    console.error('MCP Video Cloud Server running on stdio (local development mode)');
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);
   }
 }
 
-// Run main function if this file is executed directly (CommonJS compatible)
+// Run main function if this file is executed directly (local development only)
+// Smithery calls createServer() directly, not this main function
 if (require.main === module) {
   main().catch((error) => {
     console.error('Unhandled error:', error);
     process.exit(1);
   });
 }
+
