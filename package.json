@@ -1,18 +1,5 @@
 {
-    "name": "mcp-video-cloud-server",
-    "version": "1.0.0",
-    "description": "Remote MCP server for downloading videos from social media platforms and storing them in S3-compatible cloud storage",
-    "type": "module",
-    "module": "src/index.ts",
-    "scripts": {
-          "dev": "npx @smithery/cli dev",
-          "build":     "postinstall": "curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod a+rx /usr/local/bin/yt-dlp",
-        
-    },
-    "keywords": [
-          "mcp",
-{
-  "name": "mcp-video-cloud-server",
+  "name": "mcp-video-download-server",
   "version": "1.0.0",
   "type": "module",
   "module": "src/index.ts",
@@ -36,7 +23,7 @@
     "remote-server",
     "smithery"
   ],
-  "author": "MCP Video Cloud Server",
+  "author": "MCP Video Download Server",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -66,44 +53,6 @@
     "node": ">=20.0.0"
   }
 }
-          "video-downloader",
-          "yt-dlp",
-          "s3",
-          "cloudflare-r2",
-          "social-media",
-          "youtube",
-          "facebook",
-          "instagram",
-          "tiktok",
-          "remote-server",
-          "smithery"
-    ],
-    "author": "MCP Video Cloud Server",
-    "license": "MIT",
-    "repository": {
-          "type": "git",
-          "url": "https://github.com/ctaylor86/mcp-video-download-server.git"
-    },
-    "bugs": {
-          "url": "https://github.com/ctaylor86/mcp-video-download-server/issues"
-    },
-    "homepage": "https://github.com/ctaylor86/mcp-video-download-server#readme",
-    "dependencies": {
-          "@modelcontextprotocol/sdk": "^1.17.3",
-          "@aws-sdk/client-s3": "^3.0.0",
-          "@aws-sdk/s3-request-presigner": "^3.0.0",
-          "uuid": "^10.0.0",
-          "mime-types": "^2.1.35",
-          "node-fetch": "^3.3.2",
-          "zod": "^3.25.46"
-    },
-    "devDependencies": {
-          "@types/node": "^20.0.0",
-          "@types/uuid": "^10.0.0",
-          "@types/mime-types": "^2.1.4",
-          "typescript": "^5.0.0"
-    },
-    "engines": {
           "node": ">=20.0.0"
     }
 }
