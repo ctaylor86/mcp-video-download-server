@@ -9,10 +9,13 @@ import { CloudStorageService } from './storage.js';
 export class VideoDownloaderService {
   private storageService: CloudStorageService;
   private tempDir: string;
+  private ytDlpChecked: boolean = false;
+  private ytDlpAvailable: boolean = false;
 
   constructor(storageService: CloudStorageService) {
     this.storageService = storageService;
     this.tempDir = join(tmpdir(), 'mcp-video-downloader');
+    // Don't check yt-dlp during construction to avoid startup delays
   }
 
   async ensureTempDir(): Promise<void> {
@@ -23,7 +26,43 @@ export class VideoDownloaderService {
     }
   }
 
+  private async checkYtDlp(): Promise<boolean> {
+    if (this.ytDlpChecked) {
+      return this.ytDlpAvailable;
+    }
+
+    return new Promise((resolve) => {
+      const process = spawn('yt-dlp', ['--version'], { stdio: 'pipe' });
+      
+      process.on('close', (code) => {
+        this.ytDlpAvailable = code === 0;
+        this.ytDlpChecked = true;
+        resolve(this.ytDlpAvailable);
+      });
+      
+      process.on('error', () => {
+        this.ytDlpAvailable = false;
+        this.ytDlpChecked = true;
+        resolve(false);
+      });
+      
+      // Timeout after 10 seconds
+      setTimeout(() => {
+        process.kill();
+        this.ytDlpAvailable = false;
+        this.ytDlpChecked = true;
+        resolve(false);
+      }, 10000);
+    });
+  }
+
   private async runYtDlp(args: string[]): Promise<{ stdout: string; stderr: string }> {
+    // Check yt-dlp availability first
+    const available = await this.checkYtDlp();
+    if (!available) {
+      throw new Error('yt-dlp is not available or not working. Please ensure yt-dlp is installed and accessible.');
+    }
+
     return new Promise((resolve, reject) => {
       const childProcess = spawn('yt-dlp', args, { 
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -52,6 +91,12 @@ export class VideoDownloaderService {
       childProcess.on('error', (error: Error) => {
         reject(error);
       });
+
+      // Add timeout for individual operations
+      setTimeout(() => {
+        childProcess.kill();
+        reject(new Error('yt-dlp operation timed out'));
+      }, 300000); // 5 minute timeout
     });
   }
 
@@ -99,7 +144,7 @@ export class VideoDownloaderService {
     const outputTemplate = join(this.tempDir, `video_${sessionId}.%(ext)s`);
 
     try {
-      // Get metadata first
+      // Get metadata first (this will also check yt-dlp availability)
       const metadata = await this.getVideoMetadata(url);
 
       const args = [
@@ -329,4 +374,3 @@ export class VideoDownloaderService {
     return textLines.join(' ').replace(/\s+/g, ' ').trim();
   }
 }
-
