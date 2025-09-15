@@ -6,7 +6,8 @@
     "module": "src/index.ts",
     "scripts": {
           "dev": "npx @smithery/cli dev",
-          "build": "npx @smithery/cli build"
+          "build":     "postinstall": "curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod a+rx /usr/local/bin/yt-dlp",
+        
     },
     "keywords": [
           "mcp",
