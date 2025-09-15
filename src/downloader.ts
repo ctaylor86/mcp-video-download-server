@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { promises as fs } from 'fs';
+import * as fs from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
@@ -9,261 +9,15 @@ import { CloudStorageService } from './storage.js';
 export class VideoDownloaderService {
   private storageService: CloudStorageService;
   private tempDir: string;
-
-  constructor(storageService: CloudStorageService) {
-import { promises as fs } from 'fs';
-import { join } from 'path';
-import { tmpdir } from 'os';
-import { v4 as uuidv4 } from 'uuid';
-import YTDlpWrap from 'yt-dlp-wrap';
-import type { VideoMetadata, DownloadResult, TranscriptResult, ThumbnailResult, YtDlpOutput } from './types.js';
-import { CloudStorageService } from './storage.js';
-
-export class VideoDownloaderService {
-  private storageService: CloudStorageService;
-  private tempDir: string;
-  private ytDlp: YTDlpWrap;
 
   constructor(storageService: CloudStorageService) {
     this.storageService = storageService;
     this.tempDir = join(tmpdir(), 'mcp-video-downloader');
-    this.ytDlp = new YTDlpWrap();
   }
 
   async ensureTempDir(): Promise<void> {
     try {
-      await fs.mkdir(this.tempDir, { recursive: true });
-    } catch (error) {
-      console.error('Failed to create temp directory:', error);
-    }
-  }
-
-  async getVideoMetadata(url: string): Promise<VideoMetadata> {
-    try {
-      const metadata = await this.ytDlp.getVideoInfo(url);
-      
-      return {
-        id: metadata.id,
-        title: metadata.title,
-        description: metadata.description,
-        duration: metadata.duration,
-        uploader: metadata.uploader,
-        upload_date: metadata.upload_date,
-        view_count: metadata.view_count,
-        like_count: metadata.like_count,
-        thumbnail: metadata.thumbnail,
-        webpage_url: metadata.webpage_url,
-        extractor: metadata.extractor,
-        formats: metadata.formats?.map(f => ({
-          format_id: f.format_id,
-          ext: f.ext,
-          quality: f.quality,
-          filesize: f.filesize,
-          width: f.width,
-          height: f.height
-        })) || []
-      };
-    } catch (error) {
-      throw new Error(`Failed to get video metadata: ${error}`);
-    }
-  }
-
-  async downloadVideo(url: string, quality: string = 'best'): Promise<DownloadResult> {
-    await this.ensureTempDir();
-    
-    const filename = `video_${uuidv4()}.%(ext)s`;
-    const outputPath = join(this.tempDir, filename);
-    
-    try {
-      const downloadedFiles = await this.ytDlp.exec([
-        url,
-        '-f', quality,
-        '-o', outputPath,
-        '--print', 'after_move:filepath'
-      ]);
-      
-      const actualFilePath = downloadedFiles.split('\n').find(line => line.trim())?.trim();
-      if (!actualFilePath) {
-        throw new Error('Could not determine downloaded file path');
-      }
-
-      const stats = await fs.stat(actualFilePath);
-      const cloudUrl = await this.storageService.uploadFile(actualFilePath, 'videos');
-      
-      // Clean up local file
-      await fs.unlink(actualFilePath);
-      
-      return {
-        url: cloudUrl,
-        filename: actualFilePath.split('/').pop() || 'unknown',
-        size: stats.size,
-        metadata: await this.getVideoMetadata(url)
-      };
-    } catch (error) {
-      throw new Error(`Failed to download video: ${error}`);
-    }
-  }
-
-  async downloadAudio(url: string): Promise<DownloadResult> {
-    await this.ensureTempDir();
-    
-    const filename = `audio_${uuidv4()}.%(ext)s`;
-    const outputPath = join(this.tempDir, filename);
-    
-    try {
-      const downloadedFiles = await this.ytDlp.exec([
-        url,
-        '-f', 'bestaudio',
-        '--extract-audio',
-        '--audio-format', 'mp3',
-        '-o', outputPath,
-        '--print', 'after_move:filepath'
-      ]);
-      
-      const actualFilePath = downloadedFiles.split('\n').find(line => line.trim())?.trim();
-      if (!actualFilePath) {
-        throw new Error('Could not determine downloaded file path');
-      }
-
-      const stats = await fs.stat(actualFilePath);
-      const cloudUrl = await this.storageService.uploadFile(actualFilePath, 'audio');
-      
-      // Clean up local file
-      await fs.unlink(actualFilePath);
-      
-      return {
-        url: cloudUrl,
-        filename: actualFilePath.split('/').pop() || 'unknown',
-        size: stats.size,
-        metadata: await this.getVideoMetadata(url)
-      };
-    } catch (error) {
-      throw new Error(`Failed to download audio: ${error}`);
-    }
-  }
-
-  async extractTranscript(url: string, language: string = 'en'): Promise<TranscriptResult> {
-    await this.ensureTempDir();
-    
-    const filename = `transcript_${uuidv4()}.vtt`;
-    const outputPath = join(this.tempDir, filename);
-    
-    try {
-      await this.ytDlp.exec([
-        url,
-        '--write-subs',
-        '--write-auto-subs',
-        '--sub-lang', language,
-        '--sub-format', 'vtt',
-        '--skip-download',
-        '-o', outputPath.replace('.vtt', '.%(ext)s')
-      ]);
-      
-      // Find the actual subtitle file
-      const files = await fs.readdir(this.tempDir);
-      const subtitleFile = files.find(f => f.includes('transcript_') && f.endsWith('.vtt'));
-      
-      if (!subtitleFile) {
-        throw new Error('No subtitle file found');
-      }
-      
-      const subtitlePath = join(this.tempDir, subtitleFile);
-      const content = await fs.readFile(subtitlePath, 'utf-8');
-      const cleanedContent = this.cleanSubtitles(content);
-      
-      // Write cleaned content to a text file
-      const textFilename = `transcript_${uuidv4()}.txt`;
-      const textPath = join(this.tempDir, textFilename);
-      await fs.writeFile(textPath, cleanedContent);
-      
-      const cloudUrl = await this.storageService.uploadFile(textPath, 'transcripts');
-      
-      // Clean up local files
-      await fs.unlink(subtitlePath);
-      await fs.unlink(textPath);
-      
-      return {
-        url: cloudUrl,
-        filename: textFilename,
-        content: cleanedContent.substring(0, 500) + (cleanedContent.length > 500 ? '...' : '')
-      };
-    } catch (error) {
-      throw new Error(`Failed to extract transcript: ${error}`);
-    }
-  }
-
-  async extractThumbnail(url: string): Promise<ThumbnailResult> {
-    await this.ensureTempDir();
-    
-    const filename = `thumbnail_${uuidv4()}.%(ext)s`;
-    const outputPath = join(this.tempDir, filename);
-    
-    try {
-      await this.ytDlp.exec([
-        url,
-        '--write-thumbnail',
-        '--skip-download',
-        '-o', outputPath
-      ]);
-      
-      // Find the actual thumbnail file
-      const files = await fs.readdir(this.tempDir);
-      const thumbnailFile = files.find(f => f.includes('thumbnail_') && (f.endsWith('.jpg') || f.endsWith('.png') || f.endsWith('.webp')));
-      
-      if (!thumbnailFile) {
-        throw new Error('No thumbnail file found');
-      }
-      
-      const thumbnailPath = join(this.tempDir, thumbnailFile);
-      const cloudUrl = await this.storageService.uploadFile(thumbnailPath, 'thumbnails');
-      
-      // Clean up local file
-      await fs.unlink(thumbnailPath);
-      
-      return {
-        url: cloudUrl,
-        filename: thumbnailFile
-      };
-    } catch (error) {
-      throw new Error(`Failed to extract thumbnail: ${error}`);
-    }
-  }
-
-  private cleanSubtitles(vttContent: string): string {
-    const lines = vttContent.split('\n');
-    const textLines: string[] = [];
-    
-    for (const line of lines) {
-      const trimmed = line.trim();
-      // Skip VTT headers, timestamps, and empty lines
-      if (trimmed && 
-          !trimmed.startsWith('WEBVTT') && 
-          !trimmed.includes('-->') && 
-          !trimmed.match(/^\d+$/)) {
-        // Remove HTML tags and clean up
-        const cleaned = trimmed
-          .replace(/<[^>]*>/g, '')
-          .replace(/&amp;/g, '&')
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/&quot;/g, '"')
-          .trim();
-        
-        if (cleaned) {
-          textLines.push(cleaned);
-        }
-      }
-    }
-    
-    return textLines.join(' ').replace(/\s+/g, ' ').trim();
-  }
-}
-    this.tempDir = join(tmpdir(), 'mcp-video-downloader');
-  }
-
-  async ensureTempDir(): Promise<void> {
-    try {
-      await fs.mkdir(this.tempDir, { recursive: true });
+      await fs.promises.mkdir(this.tempDir, { recursive: true });
     } catch (error) {
       console.error('Failed to create temp directory:', error);
     }
@@ -357,7 +111,7 @@ export class VideoDownloaderService {
       await this.runYtDlp(args);
 
       // Find the downloaded file
-      const files = await fs.readdir(this.tempDir);
+      const files = await fs.promises.readdir(this.tempDir);
       const videoFile = files.find(f => f.startsWith(`video_${sessionId}.`));
       
       if (!videoFile) {
@@ -365,10 +119,13 @@ export class VideoDownloaderService {
       }
 
       const localPath = join(this.tempDir, videoFile);
-      const stats = await fs.stat(localPath);
+      const stats = await fs.promises.stat(localPath);
       
       // Upload to cloud storage
       const publicUrl = await this.storageService.uploadFile(localPath, 'videos/');
+
+      // Clean up local file
+      await fs.promises.unlink(localPath);
 
       return {
         success: true,
@@ -406,7 +163,7 @@ export class VideoDownloaderService {
       await this.runYtDlp(args);
 
       // Find the downloaded file
-      const files = await fs.readdir(this.tempDir);
+      const files = await fs.promises.readdir(this.tempDir);
       const audioFile = files.find(f => f.startsWith(`audio_${sessionId}.`));
       
       if (!audioFile) {
@@ -414,10 +171,13 @@ export class VideoDownloaderService {
       }
 
       const localPath = join(this.tempDir, audioFile);
-      const stats = await fs.stat(localPath);
+      const stats = await fs.promises.stat(localPath);
       
       // Upload to cloud storage
       const publicUrl = await this.storageService.uploadFile(localPath, 'audio/');
+
+      // Clean up local file
+      await fs.promises.unlink(localPath);
 
       return {
         success: true,
@@ -454,7 +214,7 @@ export class VideoDownloaderService {
       await this.runYtDlp(args);
 
       // Find the subtitle file
-      const files = await fs.readdir(this.tempDir);
+      const files = await fs.promises.readdir(this.tempDir);
       const subtitleFile = files.find(f => f.startsWith(`transcript_${sessionId}`) && f.endsWith('.srt'));
       
       if (!subtitleFile) {
@@ -462,7 +222,7 @@ export class VideoDownloaderService {
       }
 
       const localPath = join(this.tempDir, subtitleFile);
-      const subtitleContent = await fs.readFile(localPath, 'utf-8');
+      const subtitleContent = await fs.promises.readFile(localPath, 'utf-8');
       
       // Clean transcript (remove timestamps and formatting)
       const cleanTranscript = this.cleanSubtitles(subtitleContent);
@@ -470,10 +230,14 @@ export class VideoDownloaderService {
       // Create clean transcript file
       const transcriptFileName = `transcript_${sessionId}.txt`;
       const transcriptPath = join(this.tempDir, transcriptFileName);
-      await fs.writeFile(transcriptPath, cleanTranscript, 'utf-8');
+      await fs.promises.writeFile(transcriptPath, cleanTranscript, 'utf-8');
       
       // Upload to cloud storage
       const publicUrl = await this.storageService.uploadFile(transcriptPath, 'transcripts/');
+
+      // Clean up local files
+      await fs.promises.unlink(localPath);
+      await fs.promises.unlink(transcriptPath);
 
       return {
         success: true,
@@ -507,7 +271,7 @@ export class VideoDownloaderService {
       await this.runYtDlp(args);
 
       // Find the thumbnail file
-      const files = await fs.readdir(this.tempDir);
+      const files = await fs.promises.readdir(this.tempDir);
       const thumbnailFile = files.find(f => f.startsWith(`thumbnail_${sessionId}.`));
       
       if (!thumbnailFile) {
@@ -518,6 +282,9 @@ export class VideoDownloaderService {
       
       // Upload to cloud storage
       const publicUrl = await this.storageService.uploadFile(localPath, 'thumbnails/');
+
+      // Clean up local file
+      await fs.promises.unlink(localPath);
 
       return {
         success: true,
