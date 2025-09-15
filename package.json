@@ -43,7 +43,6 @@
           "zod": "^3.25.46"
     },
     "devDependencies": {
-          "@smithery/cli": "^0.4.0",
           "@types/node": "^20.0.0",
           "@types/uuid": "^10.0.0",
           "@types/mime-types": "^2.1.4",
