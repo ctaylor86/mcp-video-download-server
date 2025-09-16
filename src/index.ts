@@ -91,7 +91,7 @@ export default function createServer({
 }) {
   const server = new McpServer({
     name: "mcp-video-download-server",
-    version: "2.0.0", // Updated version to reflect enhancements
+    version: "2.0.0",
   });
 
   // Test connection tool (enhanced with more details)
@@ -135,7 +135,6 @@ export default function createServer({
       
       let diagnostics = `🔧 Professional Video Download Server v2.0.0 Diagnostics\n\n`;
       
-      // Platform support information
       diagnostics += `📊 Platform Support & Success Rates:\n`;
       diagnostics += `✅ INSTAGRAM: 85-90% success rate 🔓 No Auth Required\n`;
       diagnostics += `   💡 Uses GraphQL API for public posts, handles age-restricted content\n\n`;
@@ -148,7 +147,6 @@ export default function createServer({
       diagnostics += `✅ LINKEDIN: 60-70% success rate 🔓 Public content only\n`;
       diagnostics += `   💡 Basic yt-dlp support for public posts\n\n`;
 
-      // Test storage connection
       try {
         await storage.testConnection();
         diagnostics += `☁️ Cloud Storage: ✅ Connected and operational\n`;
@@ -165,12 +163,6 @@ export default function createServer({
       diagnostics += `• Comprehensive error handling with user guidance\n`;
       diagnostics += `• Direct CDN URL extraction when possible\n`;
       diagnostics += `• Multi-method fallback (GraphQL → yt-dlp → alternatives)\n`;
-
-      diagnostics += `\n📈 Performance Optimizations:\n`;
-      diagnostics += `• Lazy service initialization for faster startup\n`;
-      diagnostics += `• Efficient error detection and recovery\n`;
-      diagnostics += `• Platform-specific timeout and retry logic\n`;
-      diagnostics += `• Intelligent content type detection\n`;
 
       return {
         content: [
@@ -260,7 +252,7 @@ export default function createServer({
               text: `✅ Audio extracted successfully!\n\n🎵 Audio Details:\n• Title: ${result.metadata?.title || 'Unknown'}\n• Platform: ${platform.toUpperCase()}\n• Duration: ${result.metadata?.duration || 'N/A'} seconds\n• Uploader: ${result.metadata?.uploader || 'Unknown'}\n\n📁 File Details:\n• Filename: ${result.filename}\n• Size: ${result.fileSize} bytes\n• Format: MP3 (high quality)\n• URL: ${result.publicUrl}\n\n⚡ Method: Professional audio extraction`
             }
           ]
-        ];
+        };
       } else {
         return {
           content: [
@@ -315,7 +307,7 @@ export default function createServer({
               text: `❌ Transcript extraction failed: ${result.error}\n\n📱 Platform: ${platform.toUpperCase()}\n💡 Tip: Not all videos have transcripts available. ${getPlatformTip(platform)}`
             }
           ]
-        ];
+        };
       }
     } catch (error) {
       return {
@@ -351,7 +343,7 @@ export default function createServer({
               text: `✅ Thumbnail extracted successfully!\n\n🖼️ Image Details:\n• Platform: ${platform.toUpperCase()}\n• Format: High-quality image\n\n📁 File Details:\n• Filename: ${result.filename}\n• URL: ${result.publicUrl}\n\n⚡ Method: Professional thumbnail extraction`
             }
           ]
-        ];
+        };
       } else {
         return {
           content: [
@@ -360,7 +352,7 @@ export default function createServer({
               text: `❌ Thumbnail extraction failed: ${result.error}\n\n📱 Platform: ${platform.toUpperCase()}\n💡 Tip: ${getPlatformTip(platform)}`
             }
           ]
-        ];
+        };
       }
     } catch (error) {
       return {
