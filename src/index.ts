@@ -217,7 +217,7 @@ export default function createServer({
               text: `❌ Transcript extraction failed: ${result.error}`
             }
           ]
-        ];
+        };
       }
     } catch (error) {
       return {
@@ -260,7 +260,7 @@ export default function createServer({
               text: `❌ Thumbnail extraction failed: ${result.error}`
             }
           ]
-        ];
+        };
       }
     } catch (error) {
       return {
