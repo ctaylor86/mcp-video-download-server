@@ -489,4 +489,3 @@ app.listen(PORT, () => {
   console.log(`🔗 MCP endpoint: http://localhost:${PORT}/mcp`);
   console.log(`✨ Enhanced features: Instagram GraphQL, Professional optimizations, Multi-platform support`);
 });
-
