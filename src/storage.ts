@@ -61,12 +61,12 @@ export class CloudStorageService {
       if (this.config.publicUrlBase) {
         return `${this.config.publicUrlBase}/${uniqueKey}`;
       } else {
-        // Generate a presigned URL that expires in 1 year for "permanent" access
+        // Generate a presigned URL that expires in 7 days (maximum allowed by AWS)
         const getCommand = new GetObjectCommand({
           Bucket: this.config.bucketName,
           Key: uniqueKey,
         });
-        return await getSignedUrl(this.s3Client, getCommand, { expiresIn: 31536000 }); // 1 year
+        return await getSignedUrl(this.s3Client, getCommand, { expiresIn: 604800 }); // 7 days (max allowed)
       }
     } catch (error) {
       console.error('Failed to upload file to cloud storage:', error);
@@ -94,12 +94,12 @@ export class CloudStorageService {
       if (this.config.publicUrlBase) {
         return `${this.config.publicUrlBase}/${uniqueKey}`;
       } else {
-        // Generate a presigned URL that expires in 1 year for "permanent" access
+        // Generate a presigned URL that expires in 7 days (maximum allowed by AWS)
         const getCommand = new GetObjectCommand({
           Bucket: this.config.bucketName,
           Key: uniqueKey,
         });
-        return await getSignedUrl(this.s3Client, getCommand, { expiresIn: 31536000 }); // 1 year
+        return await getSignedUrl(this.s3Client, getCommand, { expiresIn: 604800 }); // 7 days (max allowed)
       }
     } catch (error) {
       console.error('Failed to upload buffer to cloud storage:', error);
