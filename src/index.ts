@@ -1,12 +1,27 @@
-import { createServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { z } from 'zod';
-import express from 'express';
-import cors from 'cors';
+import express, { Request, Response } from "express";
+import cors from "cors";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import { parseAndValidateConfig } from "@smithery/sdk";
 import { CloudStorageService } from './storage.js';
 import { VideoDownloaderService } from './downloader.js';
 import type { S3Config } from './types.js';
 
-// Configuration schema for S3 settings
+const app = express();
+const PORT = process.env.PORT || 8081;
+
+// CORS configuration for browser-based MCP clients
+app.use(cors({
+  origin: '*', // Configure appropriately for production
+  exposedHeaders: ['Mcp-Session-Id', 'mcp-protocol-version'],
+  allowedHeaders: ['Content-Type', 'mcp-session-id'],
+}));
+
+app.use(express.json());
+
+// Define session configuration schema
 export const configSchema = z.object({
   s3Endpoint: z.string().describe('S3-compatible endpoint URL'),
   s3Region: z.string().describe('S3 region'),
@@ -43,17 +58,21 @@ function getServices(config: Config) {
   return services;
 }
 
-// Create MCP server
-export default function createMCPServer({ config }: { config: Config }) {
-  const server = createServer({
-    name: 'mcp-video-download-server',
-    version: '1.0.0'
+// Create MCP server with your tools
+export default function createServer({
+  config,
+}: {
+  config: z.infer<typeof configSchema>;
+}) {
+  const server = new McpServer({
+    name: "mcp-video-download-server",
+    version: "1.0.0",
   });
 
   // Test connection tool
-  server.registerTool('test_connection', {
-    title: 'Test Connection',
-    description: 'Test S3 connectivity and show configuration',
+  server.registerTool("test_connection", {
+    title: "Test Connection",
+    description: "Test S3 connectivity and show configuration",
     inputSchema: {}
   }, async () => {
     try {
@@ -92,14 +111,14 @@ export default function createMCPServer({ config }: { config: Config }) {
   });
 
   // Download video to cloud tool
-  server.registerTool('download_video_to_cloud', {
-    title: 'Download Video to Cloud',
-    description: 'Download a video from a URL and upload it to cloud storage',
+  server.registerTool("download_video_to_cloud", {
+    title: "Download Video to Cloud",
+    description: "Download a video from a URL and upload it to cloud storage",
     inputSchema: {
       url: z.string().describe('Video URL to download'),
       quality: z.string().optional().describe('Video quality preference (e.g., "best", "worst", "720p")')
     }
-  }, async ({ url, quality }) => {
+  }, async ({ url, quality }: { url: string; quality?: string }) => {
     try {
       const { downloader } = getServices(config);
       const result = await downloader.downloadVideo(url, quality);
@@ -136,14 +155,14 @@ export default function createMCPServer({ config }: { config: Config }) {
   });
 
   // Download audio to cloud tool
-  server.registerTool('download_audio_to_cloud', {
-    title: 'Download Audio to Cloud',
-    description: 'Extract audio from a video URL and upload it to cloud storage',
+  server.registerTool("download_audio_to_cloud", {
+    title: "Download Audio to Cloud",
+    description: "Extract audio from a video URL and upload it to cloud storage",
     inputSchema: {
       url: z.string().describe('Video URL to extract audio from'),
       format: z.string().optional().describe('Audio format (default: mp3)')
     }
-  }, async ({ url, format }) => {
+  }, async ({ url, format }: { url: string; format?: string }) => {
     try {
       const { downloader } = getServices(config);
       const result = await downloader.downloadAudio(url, format);
@@ -180,14 +199,14 @@ export default function createMCPServer({ config }: { config: Config }) {
   });
 
   // Extract transcript to cloud tool
-  server.registerTool('extract_transcript_to_cloud', {
-    title: 'Extract Transcript to Cloud',
-    description: 'Extract transcript/subtitles from a video URL and upload to cloud storage',
+  server.registerTool("extract_transcript_to_cloud", {
+    title: "Extract Transcript to Cloud",
+    description: "Extract transcript/subtitles from a video URL and upload to cloud storage",
     inputSchema: {
       url: z.string().describe('Video URL to extract transcript from'),
       language: z.string().optional().describe('Language code for subtitles (e.g., "en", "es")')
     }
-  }, async ({ url, language }) => {
+  }, async ({ url, language }: { url: string; language?: string }) => {
     try {
       const { downloader } = getServices(config);
       const result = await downloader.extractTranscript(url, language);
@@ -224,13 +243,13 @@ export default function createMCPServer({ config }: { config: Config }) {
   });
 
   // Extract thumbnail to cloud tool
-  server.registerTool('extract_thumbnail_to_cloud', {
-    title: 'Extract Thumbnail to Cloud',
-    description: 'Extract thumbnail from a video URL and upload to cloud storage',
+  server.registerTool("extract_thumbnail_to_cloud", {
+    title: "Extract Thumbnail to Cloud",
+    description: "Extract thumbnail from a video URL and upload to cloud storage",
     inputSchema: {
       url: z.string().describe('Video URL to extract thumbnail from')
     }
-  }, async ({ url }) => {
+  }, async ({ url }: { url: string }) => {
     try {
       const { downloader } = getServices(config);
       const result = await downloader.extractThumbnail(url);
@@ -267,13 +286,13 @@ export default function createMCPServer({ config }: { config: Config }) {
   });
 
   // Get video metadata tool
-  server.registerTool('get_video_metadata', {
-    title: 'Get Video Metadata',
-    description: 'Get metadata information about a video without downloading it',
+  server.registerTool("get_video_metadata", {
+    title: "Get Video Metadata",
+    description: "Get metadata information about a video without downloading it",
     inputSchema: {
       url: z.string().describe('Video URL to get metadata for')
     }
-  }, async ({ url }) => {
+  }, async ({ url }: { url: string }) => {
     try {
       const { downloader } = getServices(config);
       const result = await downloader.getVideoMetadata(url);
@@ -310,65 +329,61 @@ export default function createMCPServer({ config }: { config: Config }) {
     }
   });
 
-  return server;
+  return server.server;
 }
 
-// HTTP server setup for container deployment
-if (process.env.TRANSPORT === 'http' || !process.stdin.isTTY) {
-  const app = express();
-  app.use(cors());
-  app.use(express.json());
+// Handle MCP requests at /mcp endpoint
+app.all('/mcp', async (req: Request, res: Response) => {
+  try {
+    const result = parseAndValidateConfig(req, configSchema);
+    if (result.error) {
+      return res.status(result.value.status).json(result.value);
+    }
 
-  app.post('/mcp', async (req, res) => {
-    try {
-      // Parse configuration from query parameters
-      const config: Config = {
-        s3Endpoint: req.query.s3Endpoint as string,
-        s3Region: req.query.s3Region as string,
-        s3AccessKeyId: req.query.s3AccessKeyId as string,
-        s3SecretAccessKey: req.query.s3SecretAccessKey as string,
-        s3BucketName: req.query.s3BucketName as string,
-        s3PublicUrlBase: req.query.s3PublicUrlBase as string | undefined
-      };
+    const server = createServer({ config: result.value });
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+    });
 
-      // Validate required configuration
-      const parseResult = configSchema.safeParse(config);
-      if (!parseResult.success) {
-        return res.status(400).json({
-          error: 'Invalid configuration',
-          details: parseResult.error.errors
-        });
-      }
+    // Clean up on request close
+    res.on('close', () => {
+      transport.close();
+      server.close();
+    });
 
-      const server = createMCPServer({ config: parseResult.data });
-      
-      // Handle MCP request
-      const response = await server.handleRequest(req.body);
-      res.json(response);
-    } catch (error) {
-      console.error('MCP request error:', error);
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (error) {
+    console.error('Error handling MCP request:', error);
+    if (!res.headersSent) {
       res.status(500).json({
-        error: 'Internal server error',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        jsonrpc: '2.0',
+        error: { code: -32603, message: 'Internal server error' },
+        id: null,
       });
     }
-  });
+  }
+});
 
-  const port = process.env.PORT || 3000;
-  app.listen(port, () => {
-    console.log(`MCP server listening on port ${port}`);
-  });
+// Main function to start the server in the appropriate mode
+async function main() {
+  const transport = process.env.TRANSPORT || 'stdio';
+  
+  if (transport === 'http') {
+    // Run in HTTP mode
+    app.listen(PORT, () => {
+      console.log(`MCP HTTP Server listening on port ${PORT}`);
+    });
+  } else {
+    // STDIO mode for local development
+    console.error("STDIO mode not supported in container deployment");
+    process.exit(1);
+  }
 }
 
-// STDIO mode for local development
-export async function main() {
-  // This is only used for local STDIO development
-  // Container deployment uses HTTP mode above
-  console.log('STDIO mode not supported in container deployment');
+// Start the server
+main().catch((error) => {
+  console.error("Server error:", error);
   process.exit(1);
-}
-
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch(console.error);
-}
+});
 
