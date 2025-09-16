@@ -1,5 +1,5 @@
-# Use Node.js 18 with Alpine Linux as base image
-FROM node:18-alpine
+# Use Node.js 20 with Alpine Linux as base image (required for package.json engines)
+FROM node:20-alpine
 
 # Install Python, pip, and other dependencies needed for yt-dlp
 RUN apk add --no-cache \
@@ -23,8 +23,8 @@ RUN npm install
 # Copy application code
 COPY . .
 
-# Build the TypeScript application
-RUN npm run build
+# Build the TypeScript application using regular TypeScript compiler
+RUN npx tsc
 
 # Expose port (Smithery will handle port mapping)
 EXPOSE 3000

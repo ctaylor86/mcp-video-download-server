@@ -5,8 +5,8 @@
   "module": "src/index.ts",
   "description": "Remote MCP server for downloading videos from social media platforms and storing them in S3-compatible cloud storage",
   "scripts": {
-    "dev": "npx @smithery/cli dev",
-    "build": "npx @smithery/cli build"
+    "dev": "npx tsx src/index.ts",
+    "build": "npx tsc"
   },
   "keywords": [
     "mcp",
@@ -40,8 +40,7 @@
     "uuid": "^10.0.0",
     "mime-types": "^2.1.35",
     "node-fetch": "^3.3.2",
-    "zod": "^3.25.46",
-    "yt-dlp-wrap": "^2.1.1"
+    "zod": "^3.25.46"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
