@@ -313,7 +313,7 @@ app.all('/mcp', async (req: Request, res: Response) => {
   try {
     const result = parseAndValidateConfig(req, configSchema);
     if (result.error) {
-      return res.status(result.value?.status || 400).json(result.value);
+      return res.status(400).json({ error: 'Configuration validation failed' });
     }
 
     const server = createServer({ config: result.value });
