@@ -83,6 +83,14 @@ function getPlatformTip(platform: string): string {
   return tips[platform as keyof typeof tips] || tips.unknown;
 }
 
+// Helper function to format duration safely
+function formatDuration(duration?: number): string {
+  if (!duration) return 'N/A';
+  const minutes = Math.floor(duration / 60);
+  const seconds = duration % 60;
+  return `${duration} seconds (${minutes}:${String(seconds).padStart(2, '0')})`;
+}
+
 // Create MCP server with your tools
 export default function createServer({
   config,
@@ -94,7 +102,7 @@ export default function createServer({
     version: "2.0.0",
   });
 
-  // Test connection tool (enhanced with more details)
+  // Test connection tool
   server.registerTool("test_connection", {
     title: "Test Connection",
     description: "Test S3 connectivity and show configuration with enhanced diagnostics",
@@ -124,7 +132,7 @@ export default function createServer({
     }
   });
 
-  // Enhanced system diagnostics tool
+  // System diagnostics tool
   server.registerTool("system_diagnostics", {
     title: "System Diagnostics",
     description: "Show comprehensive system status, platform support, and success rates",
@@ -184,7 +192,7 @@ export default function createServer({
     }
   });
 
-  // Enhanced download video to cloud tool
+  // Download video to cloud tool
   server.registerTool("download_video_to_cloud", {
     title: "Download Video to Cloud",
     description: "🎬 Download videos from YouTube, Instagram, TikTok, Facebook, and LinkedIn using professional techniques with 85-95% success rates",
@@ -230,7 +238,7 @@ export default function createServer({
     }
   });
 
-  // Enhanced download audio to cloud tool
+  // Download audio to cloud tool
   server.registerTool("download_audio_to_cloud", {
     title: "Download Audio to Cloud",
     description: "🎵 Extract and download audio from videos in high-quality MP3 format from any supported platform",
@@ -275,7 +283,7 @@ export default function createServer({
     }
   });
 
-  // Enhanced extract transcript to cloud tool
+  // Extract transcript to cloud tool
   server.registerTool("extract_transcript_to_cloud", {
     title: "Extract Transcript to Cloud",
     description: "📝 Extract transcript/subtitles from videos with automatic language detection",
@@ -307,7 +315,7 @@ export default function createServer({
               text: `❌ Transcript extraction failed: ${result.error}\n\n📱 Platform: ${platform.toUpperCase()}\n💡 Tip: Not all videos have transcripts available. ${getPlatformTip(platform)}`
             }
           ]
-        ];
+        };
       }
     } catch (error) {
       return {
@@ -321,7 +329,7 @@ export default function createServer({
     }
   });
 
-  // Enhanced extract thumbnail to cloud tool
+  // Extract thumbnail to cloud tool
   server.registerTool("extract_thumbnail_to_cloud", {
     title: "Extract Thumbnail to Cloud",
     description: "🖼️ Extract high-quality thumbnail images from videos",
@@ -352,7 +360,7 @@ export default function createServer({
               text: `❌ Thumbnail extraction failed: ${result.error}\n\n📱 Platform: ${platform.toUpperCase()}\n💡 Tip: ${getPlatformTip(platform)}`
             }
           ]
-        ];
+        };
       }
     } catch (error) {
       return {
@@ -366,7 +374,7 @@ export default function createServer({
     }
   });
 
-  // Enhanced get video metadata tool
+  // Get video metadata tool
   server.registerTool("get_video_metadata", {
     title: "Get Video Metadata",
     description: "📊 Get comprehensive video metadata including title, duration, views, and technical details without downloading",
@@ -380,11 +388,15 @@ export default function createServer({
       const { downloader } = getServices(config);
       const metadata = await downloader.getVideoMetadata(url);
       
+      const durationFormatted = formatDuration(metadata.duration);
+      const isPopular = metadata.viewCount && metadata.viewCount > 100000;
+      const isLongForm = metadata.duration && metadata.duration > 300;
+      
       return {
         content: [
           {
             type: 'text',
-            text: `📊 Video Metadata Analysis\n\n🎬 Content Information:\n• Title: ${metadata.title}\n• Platform: ${platform.toUpperCase()}\n• Duration: ${metadata.duration} seconds (${Math.floor(metadata.duration / 60)}:${String(metadata.duration % 60).padStart(2, '0')})\n• Uploader: ${metadata.uploader}\n• Views: ${metadata.viewCount?.toLocaleString() || 'N/A'}\n• Upload Date: ${metadata.uploadDate || 'N/A'}\n\n🔧 Technical Details:\n• Video ID: ${metadata.id}\n• Extractor: ${metadata.extractor}\n• Platform Success Rate: ${platform === 'instagram' ? '85-90%' : platform === 'youtube' ? '90-95%' : platform === 'tiktok' ? '80-85%' : '70-80%'}\n\n📝 Description:\n${metadata.description ? metadata.description.substring(0, 300) + (metadata.description.length > 300 ? '...' : '') : 'No description available'}\n\n💡 Analysis: Content appears to be ${metadata.viewCount && metadata.viewCount > 100000 ? 'popular' : 'standard'} with ${metadata.duration > 300 ? 'long-form' : 'short-form'} format`
+            text: `📊 Video Metadata Analysis\n\n🎬 Content Information:\n• Title: ${metadata.title}\n• Platform: ${platform.toUpperCase()}\n• Duration: ${durationFormatted}\n• Uploader: ${metadata.uploader}\n• Views: ${metadata.viewCount?.toLocaleString() || 'N/A'}\n• Upload Date: ${metadata.uploadDate || 'N/A'}\n\n🔧 Technical Details:\n• Video ID: ${metadata.id}\n• Extractor: ${metadata.extractor}\n• Platform Success Rate: ${platform === 'instagram' ? '85-90%' : platform === 'youtube' ? '90-95%' : platform === 'tiktok' ? '80-85%' : '70-80%'}\n\n📝 Description:\n${metadata.description ? metadata.description.substring(0, 300) + (metadata.description.length > 300 ? '...' : '') : 'No description available'}\n\n💡 Analysis: Content appears to be ${isPopular ? 'popular' : 'standard'} with ${isLongForm ? 'long-form' : 'short-form'} format`
           }
         ]
       };
