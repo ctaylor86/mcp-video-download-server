@@ -1,6 +1,6 @@
 {
   "name": "mcp-video-download-server",
-  "version": "1.co.0",
+  "version": "1.0.0",
   "type": "module",
   "module": "src/index.ts",
   "description": "Remote MCP server for downloading videos from social media platforms and storing them in S3-compatible cloud storage",
@@ -53,3 +53,4 @@
     "node": ">=20.0.0"
   }
 }
+
