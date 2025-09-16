@@ -1,35 +1,41 @@
-import * as fs from 'fs';
-import { join } from 'path';
-import { tmpdir } from 'os';
 import { spawn } from 'child_process';
-import { v4 as uuidv4 } from 'uuid';
-import type { VideoMetadata, DownloadResult, TranscriptResult, ThumbnailResult, YtDlpOutput } from './types.js';
+import { promises as fs } from 'fs';
+import path from 'path';
 import { CloudStorageService } from './storage.js';
+import type { VideoMetadata, DownloadResult, TranscriptResult, ThumbnailResult } from './types.js';
 
 export class VideoDownloaderService {
-  private storageService: CloudStorageService;
+  private storage: CloudStorageService;
   private tempDir: string;
 
-  constructor(storageService: CloudStorageService) {
-    this.storageService = storageService;
-    this.tempDir = join(tmpdir(), 'mcp-video-downloader');
+  constructor(storage: CloudStorageService) {
+    this.storage = storage;
+    this.tempDir = '/tmp/video-downloads';
   }
 
-  async ensureTempDir(): Promise<void> {
+  private async ensureTempDir(): Promise<void> {
     try {
-      await fs.promises.mkdir(this.tempDir, { recursive: true });
+      await fs.mkdir(this.tempDir, { recursive: true });
     } catch (error) {
       console.error('Failed to create temp directory:', error);
     }
   }
 
-  private async runYtDlp(args: string[]): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const process = spawn('yt-dlp', args, {
-        cwd: this.tempDir,
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
+  private async runYtDlp(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
+    return new Promise((resolve) => {
+      // Add common arguments to avoid bot detection
+      const commonArgs = [
+        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        '--add-header', 'Accept-Language:en-us,en;q=0.5',
+        '--add-header', 'Sec-Fetch-Mode:navigate',
+        '--no-check-certificates',
+        '--prefer-free-formats',
+        '--no-warnings',
+        ...args
+      ];
 
+      const process = spawn('yt-dlp', commonArgs);
       let stdout = '';
       let stderr = '';
 
@@ -42,337 +48,283 @@ export class VideoDownloaderService {
       });
 
       process.on('close', (code) => {
-        if (code === 0) {
-          resolve(stdout);
-        } else {
-          reject(new Error(`yt-dlp failed with code ${code}: ${stderr}`));
-        }
+        resolve({ stdout, stderr, code: code || 0 });
       });
 
       process.on('error', (error) => {
-        reject(new Error(`Failed to spawn yt-dlp: ${error.message}`));
+        resolve({ stdout, stderr: error.message, code: 1 });
       });
     });
   }
 
   async downloadVideo(url: string, quality: string = 'best'): Promise<DownloadResult> {
+    await this.ensureTempDir();
+    
+    const filename = `video_${Date.now()}_%(title)s.%(ext)s`;
+    const outputPath = path.join(this.tempDir, filename);
+
     try {
-      await this.ensureTempDir();
-      
-      const outputTemplate = join(this.tempDir, `video_${uuidv4()}.%(ext)s`);
-      
-      await this.runYtDlp([
-        '--format', quality,
-        '--output', outputTemplate,
-        '--write-info-json',
-        '--no-playlist',
-        url
-      ]);
+      // Try different quality options to avoid bot detection
+      const qualityOptions = quality === 'best' 
+        ? ['best[height<=1080]', 'best[height<=720]', 'best[height<=480]', 'worst']
+        : [quality, 'best[height<=720]', 'worst'];
 
-      // Find downloaded files
-      const files = await fs.promises.readdir(this.tempDir);
-      const videoFile = files.find(f => f.startsWith('video_') && !f.endsWith('.info.json'));
-      const infoFile = files.find(f => f.startsWith('video_') && f.endsWith('.info.json'));
-
-      if (!videoFile) {
-        return {
-          success: false,
-          error: 'Video file not found after download'
-        };
-      }
-
-      const videoPath = join(this.tempDir, videoFile);
-      const stats = await fs.promises.stat(videoPath);
+      let lastError = '';
       
-      // Parse metadata if available
-      let metadata: VideoMetadata | undefined;
-      if (infoFile) {
-        try {
-          const infoPath = join(this.tempDir, infoFile);
-          const infoContent = await fs.promises.readFile(infoPath, 'utf-8');
-          const ytDlpOutput: YtDlpOutput = JSON.parse(infoContent);
+      for (const qualityOption of qualityOptions) {
+        const result = await this.runYtDlp([
+          '-f', qualityOption,
+          '-o', outputPath,
+          '--print', 'filename',
+          url
+        ]);
+
+        if (result.code === 0) {
+          const actualFilename = result.stdout.trim().split('\n').pop() || '';
+          const actualPath = path.join(this.tempDir, path.basename(actualFilename));
           
-          metadata = {
-            id: ytDlpOutput.id,
-            title: ytDlpOutput.title,
-            description: ytDlpOutput.description,
-            duration: ytDlpOutput.duration,
-            uploader: ytDlpOutput.uploader,
-            uploadDate: ytDlpOutput.upload_date,
-            viewCount: ytDlpOutput.view_count,
-            likeCount: ytDlpOutput.like_count,
-            thumbnail: ytDlpOutput.thumbnail,
-            webpage_url: ytDlpOutput.webpage_url,
-            extractor: ytDlpOutput.extractor,
-          };
-        } catch (error) {
-          console.warn('Failed to parse video metadata:', error);
+          // Check if file exists
+          try {
+            const stats = await fs.stat(actualPath);
+            const uploadResult = await this.storage.uploadFile(actualPath, `videos/${path.basename(actualPath)}`);
+            
+            // Clean up local file
+            await fs.unlink(actualPath).catch(() => {});
+            
+            // Get metadata
+            const metadata = await this.getVideoMetadata(url);
+            
+            return {
+              success: true,
+              filename: path.basename(actualPath),
+              publicUrl: uploadResult.publicUrl,
+              fileSize: stats.size,
+              metadata
+            };
+          } catch (fileError) {
+            lastError = `File not found after download: ${fileError}`;
+            continue;
+          }
+        } else {
+          lastError = result.stderr;
+          // If it's a bot detection error, try next quality
+          if (result.stderr.includes('Sign in to confirm') || result.stderr.includes('bot')) {
+            continue;
+          }
+          // For other errors, break immediately
+          break;
         }
-      }
-
-      // Upload to cloud storage
-      const publicUrl = await this.storageService.uploadFile(videoPath, 'videos/');
-
-      // Clean up local files
-      try {
-        await fs.promises.unlink(videoPath);
-        if (infoFile) {
-          await fs.promises.unlink(join(this.tempDir, infoFile));
-        }
-      } catch (error) {
-        console.warn('Failed to clean up local files:', error);
       }
 
       return {
-        success: true,
-        publicUrl,
-        filename: videoFile,
-        fileSize: stats.size,
-        metadata
+        success: false,
+        error: `yt-dlp failed with all quality options. Last error: ${lastError}`
       };
-
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred during video download'
+        error: `Download failed: ${error instanceof Error ? error.message : 'Unknown error'}`
       };
     }
   }
 
   async downloadAudio(url: string): Promise<DownloadResult> {
+    await this.ensureTempDir();
+    
+    const filename = `audio_${Date.now()}_%(title)s.%(ext)s`;
+    const outputPath = path.join(this.tempDir, filename);
+
     try {
-      await this.ensureTempDir();
-      
-      const outputTemplate = join(this.tempDir, `audio_${uuidv4()}.%(ext)s`);
-      
-      await this.runYtDlp([
-        '--extract-audio',
-        '--audio-format', 'mp3',
-        '--output', outputTemplate,
-        '--write-info-json',
-        '--no-playlist',
-        url
-      ]);
+      // Try multiple audio extraction strategies
+      const strategies = [
+        // Strategy 1: Best audio with fallback
+        ['-f', 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio', '--extract-audio', '--audio-format', 'mp3'],
+        // Strategy 2: Lower quality audio
+        ['-f', 'worstaudio', '--extract-audio', '--audio-format', 'mp3'],
+        // Strategy 3: Any available audio
+        ['-x', '--audio-format', 'mp3', '--audio-quality', '5']
+      ];
 
-      // Find downloaded files
-      const files = await fs.promises.readdir(this.tempDir);
-      const audioFile = files.find(f => f.startsWith('audio_') && f.endsWith('.mp3'));
-      const infoFile = files.find(f => f.startsWith('audio_') && f.endsWith('.info.json'));
+      let lastError = '';
 
-      if (!audioFile) {
-        return {
-          success: false,
-          error: 'Audio file not found after extraction'
-        };
-      }
+      for (const strategy of strategies) {
+        const result = await this.runYtDlp([
+          ...strategy,
+          '-o', outputPath,
+          '--print', 'filename',
+          url
+        ]);
 
-      const audioPath = join(this.tempDir, audioFile);
-      const stats = await fs.promises.stat(audioPath);
-      
-      // Parse metadata if available
-      let metadata: VideoMetadata | undefined;
-      if (infoFile) {
-        try {
-          const infoPath = join(this.tempDir, infoFile);
-          const infoContent = await fs.promises.readFile(infoPath, 'utf-8');
-          const ytDlpOutput: YtDlpOutput = JSON.parse(infoContent);
+        if (result.code === 0) {
+          // Find the actual output file (yt-dlp might change extension)
+          const files = await fs.readdir(this.tempDir);
+          const audioFile = files.find(f => f.startsWith(`audio_${Date.now().toString().slice(0, -3)}`));
           
-          metadata = {
-            id: ytDlpOutput.id,
-            title: ytDlpOutput.title,
-            description: ytDlpOutput.description,
-            duration: ytDlpOutput.duration,
-            uploader: ytDlpOutput.uploader,
-            uploadDate: ytDlpOutput.upload_date,
-            viewCount: ytDlpOutput.view_count,
-            likeCount: ytDlpOutput.like_count,
-            thumbnail: ytDlpOutput.thumbnail,
-            webpage_url: ytDlpOutput.webpage_url,
-            extractor: ytDlpOutput.extractor,
-          };
-        } catch (error) {
-          console.warn('Failed to parse video metadata:', error);
+          if (audioFile) {
+            const actualPath = path.join(this.tempDir, audioFile);
+            const stats = await fs.stat(actualPath);
+            const uploadResult = await this.storage.uploadFile(actualPath, `audio/${audioFile}`);
+            
+            // Clean up local file
+            await fs.unlink(actualPath).catch(() => {});
+            
+            // Get metadata
+            const metadata = await this.getVideoMetadata(url);
+            
+            return {
+              success: true,
+              filename: audioFile,
+              publicUrl: uploadResult.publicUrl,
+              fileSize: stats.size,
+              metadata
+            };
+          }
         }
-      }
-
-      // Upload to cloud storage
-      const publicUrl = await this.storageService.uploadFile(audioPath, 'audio/');
-
-      // Clean up local files
-      try {
-        await fs.promises.unlink(audioPath);
-        if (infoFile) {
-          await fs.promises.unlink(join(this.tempDir, infoFile));
+        
+        lastError = result.stderr;
+        // If it's a bot detection error, try next strategy
+        if (result.stderr.includes('Sign in to confirm') || result.stderr.includes('bot')) {
+          continue;
         }
-      } catch (error) {
-        console.warn('Failed to clean up local files:', error);
+        // For other errors, break immediately
+        break;
       }
 
       return {
-        success: true,
-        publicUrl,
-        filename: audioFile,
-        fileSize: stats.size,
-        metadata
+        success: false,
+        error: `Audio extraction failed with all strategies. Last error: ${lastError}`
       };
-
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred during audio extraction'
+        error: `Audio extraction failed: ${error instanceof Error ? error.message : 'Unknown error'}`
       };
     }
   }
 
   async extractTranscript(url: string, language: string = 'en'): Promise<TranscriptResult> {
+    await this.ensureTempDir();
+    
+    const filename = `transcript_${Date.now()}.txt`;
+    const outputPath = path.join(this.tempDir, filename);
+
     try {
-      await this.ensureTempDir();
-      
-      const outputTemplate = join(this.tempDir, `transcript_${uuidv4()}`);
-      
-      await this.runYtDlp([
+      const result = await this.runYtDlp([
         '--write-subs',
         '--write-auto-subs',
         '--sub-lang', language,
+        '--sub-format', 'txt',
         '--skip-download',
-        '--output', outputTemplate,
+        '-o', outputPath.replace('.txt', '.%(ext)s'),
         url
       ]);
 
-      // Find subtitle files
-      const files = await fs.promises.readdir(this.tempDir);
-      const subFile = files.find(f => f.startsWith('transcript_') && (f.endsWith('.vtt') || f.endsWith('.srt')));
-
-      if (!subFile) {
-        return {
-          success: false,
-          error: `No subtitles found for language '${language}'. The video may not have subtitles available.`
-        };
-      }
-
-      const subPath = join(this.tempDir, subFile);
-      let transcript = await fs.promises.readFile(subPath, 'utf-8');
-      
-      // Clean up subtitle formatting (basic cleanup)
-      transcript = transcript
-        .replace(/^\d+$/gm, '') // Remove subtitle numbers
-        .replace(/\d{2}:\d{2}:\d{2}[.,]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[.,]\d{3}/g, '') // Remove timestamps
-        .replace(/^WEBVTT$/gm, '') // Remove WEBVTT header
-        .replace(/^\s*$/gm, '') // Remove empty lines
-        .replace(/\n{3,}/g, '\n\n') // Reduce multiple newlines
-        .trim();
-
-      // Create clean text file
-      const cleanFileName = `transcript_${uuidv4()}.txt`;
-      const cleanPath = join(this.tempDir, cleanFileName);
-      await fs.promises.writeFile(cleanPath, transcript, 'utf-8');
-
-      // Upload to cloud storage
-      const publicUrl = await this.storageService.uploadFile(cleanPath, 'transcripts/');
-
-      // Clean up local files
-      try {
-        await fs.promises.unlink(subPath);
-        await fs.promises.unlink(cleanPath);
-      } catch (error) {
-        console.warn('Failed to clean up local files:', error);
+      if (result.code === 0) {
+        // Find the subtitle file
+        const files = await fs.readdir(this.tempDir);
+        const subFile = files.find(f => f.includes('transcript_') && f.endsWith('.txt'));
+        
+        if (subFile) {
+          const actualPath = path.join(this.tempDir, subFile);
+          const transcript = await fs.readFile(actualPath, 'utf-8');
+          const uploadResult = await this.storage.uploadFile(actualPath, `transcripts/${subFile}`);
+          
+          // Clean up local file
+          await fs.unlink(actualPath).catch(() => {});
+          
+          return {
+            success: true,
+            filename: subFile,
+            publicUrl: uploadResult.publicUrl,
+            transcript,
+            language
+          };
+        }
       }
 
       return {
-        success: true,
-        publicUrl,
-        filename: cleanFileName,
-        transcript,
-        language
+        success: false,
+        error: `Transcript extraction failed: ${result.stderr}`
       };
-
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred during transcript extraction'
+        error: `Transcript extraction failed: ${error instanceof Error ? error.message : 'Unknown error'}`
       };
     }
   }
 
   async extractThumbnail(url: string): Promise<ThumbnailResult> {
+    await this.ensureTempDir();
+    
+    const filename = `thumbnail_${Date.now()}.jpg`;
+    const outputPath = path.join(this.tempDir, filename);
+
     try {
-      await this.ensureTempDir();
-      
-      const outputTemplate = join(this.tempDir, `thumbnail_${uuidv4()}.%(ext)s`);
-      
-      await this.runYtDlp([
+      const result = await this.runYtDlp([
         '--write-thumbnail',
         '--skip-download',
-        '--output', outputTemplate,
+        '-o', outputPath.replace('.jpg', '.%(ext)s'),
         url
       ]);
 
-      // Find thumbnail file
-      const files = await fs.promises.readdir(this.tempDir);
-      const thumbnailFile = files.find(f => f.startsWith('thumbnail_') && (f.endsWith('.jpg') || f.endsWith('.png') || f.endsWith('.webp')));
-
-      if (!thumbnailFile) {
-        return {
-          success: false,
-          error: 'Thumbnail file not found after extraction'
-        };
-      }
-
-      const thumbnailPath = join(this.tempDir, thumbnailFile);
-
-      // Upload to cloud storage
-      const publicUrl = await this.storageService.uploadFile(thumbnailPath, 'thumbnails/');
-
-      // Clean up local files
-      try {
-        await fs.promises.unlink(thumbnailPath);
-      } catch (error) {
-        console.warn('Failed to clean up local files:', error);
+      if (result.code === 0) {
+        // Find the thumbnail file
+        const files = await fs.readdir(this.tempDir);
+        const thumbFile = files.find(f => f.includes('thumbnail_') && (f.endsWith('.jpg') || f.endsWith('.png') || f.endsWith('.webp')));
+        
+        if (thumbFile) {
+          const actualPath = path.join(this.tempDir, thumbFile);
+          const uploadResult = await this.storage.uploadFile(actualPath, `thumbnails/${thumbFile}`);
+          
+          // Clean up local file
+          await fs.unlink(actualPath).catch(() => {});
+          
+          return {
+            success: true,
+            filename: thumbFile,
+            publicUrl: uploadResult.publicUrl
+          };
+        }
       }
 
       return {
-        success: true,
-        publicUrl,
-        filename: thumbnailFile
+        success: false,
+        error: `Thumbnail extraction failed: ${result.stderr}`
       };
-
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred during thumbnail extraction'
+        error: `Thumbnail extraction failed: ${error instanceof Error ? error.message : 'Unknown error'}`
       };
     }
   }
 
   async getVideoMetadata(url: string): Promise<VideoMetadata> {
     try {
-      await this.ensureTempDir();
-      
       const result = await this.runYtDlp([
         '--dump-json',
-        '--no-playlist',
+        '--no-download',
         url
       ]);
 
-      const ytDlpOutput: YtDlpOutput = JSON.parse(result);
-      
-      return {
-        id: ytDlpOutput.id,
-        title: ytDlpOutput.title,
-        description: ytDlpOutput.description,
-        duration: ytDlpOutput.duration,
-        uploader: ytDlpOutput.uploader,
-        uploadDate: ytDlpOutput.upload_date,
-        viewCount: ytDlpOutput.view_count,
-        likeCount: ytDlpOutput.like_count,
-        thumbnail: ytDlpOutput.thumbnail,
-        webpage_url: ytDlpOutput.webpage_url,
-        extractor: ytDlpOutput.extractor,
-        formats: ytDlpOutput.formats
-      };
-
+      if (result.code === 0) {
+        const metadata = JSON.parse(result.stdout);
+        return {
+          id: metadata.id,
+          title: metadata.title,
+          description: metadata.description,
+          duration: metadata.duration,
+          uploader: metadata.uploader,
+          uploadDate: metadata.upload_date,
+          viewCount: metadata.view_count,
+          extractor: metadata.extractor
+        };
+      } else {
+        throw new Error(`Failed to get metadata: ${result.stderr}`);
+      }
     } catch (error) {
-      throw new Error(error instanceof Error ? error.message : 'Unknown error occurred while getting metadata');
+      throw new Error(`Failed to get video metadata: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 }
