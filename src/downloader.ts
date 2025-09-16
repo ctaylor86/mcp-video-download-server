@@ -1,21 +1,21 @@
-import { spawn } from 'child_process';
 import * as fs from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
+import YTDlpWrap from 'yt-dlp-wrap';
 import type { VideoMetadata, DownloadResult, TranscriptResult, ThumbnailResult, YtDlpOutput } from './types.js';
 import { CloudStorageService } from './storage.js';
 
 export class VideoDownloaderService {
   private storageService: CloudStorageService;
   private tempDir: string;
-  private ytDlpChecked: boolean = false;
-  private ytDlpAvailable: boolean = false;
-  private installationAttempted: boolean = false;
+  private ytDlp: YTDlpWrap;
+  private initialized: boolean = false;
 
   constructor(storageService: CloudStorageService) {
     this.storageService = storageService;
     this.tempDir = join(tmpdir(), 'mcp-video-downloader');
+    this.ytDlp = new YTDlpWrap();
   }
 
   async ensureTempDir(): Promise<void> {
@@ -26,157 +26,62 @@ export class VideoDownloaderService {
     }
   }
 
-  private async installYtDlp(): Promise<boolean> {
-    if (this.installationAttempted) {
-      return this.ytDlpAvailable;
-    }
-
-    this.installationAttempted = true;
-    console.log('Attempting to install yt-dlp...');
-
-    return new Promise((resolve) => {
-      // Try installing yt-dlp via pip
-      const installProcess = spawn('pip', ['install', 'yt-dlp'], { stdio: 'pipe' });
-      
-      installProcess.on('close', async (code) => {
-        if (code === 0) {
-          console.log('yt-dlp installation completed, checking availability...');
-          // Check if installation was successful
-          const available = await this.checkYtDlp();
-          resolve(available);
-        } else {
-          console.error('Failed to install yt-dlp via pip');
-          resolve(false);
-        }
-      });
-      
-      installProcess.on('error', (error) => {
-        console.error('Error installing yt-dlp:', error);
-        resolve(false);
-      });
-      
-      // Timeout after 60 seconds
-      setTimeout(() => {
-        installProcess.kill();
-        console.error('yt-dlp installation timed out');
-        resolve(false);
-      }, 60000);
-    });
-  }
-
-  private async checkYtDlp(): Promise<boolean> {
-    if (this.ytDlpChecked && this.ytDlpAvailable) {
+  private async initializeYtDlp(): Promise<boolean> {
+    if (this.initialized) {
       return true;
     }
 
-    return new Promise((resolve) => {
-      const process = spawn('yt-dlp', ['--version'], { stdio: 'pipe' });
+    try {
+      console.log('Initializing yt-dlp-wrap...');
       
-      process.on('close', (code) => {
-        this.ytDlpAvailable = code === 0;
-        this.ytDlpChecked = true;
-        if (this.ytDlpAvailable) {
-          console.log('yt-dlp is available and working');
-        }
-        resolve(this.ytDlpAvailable);
-      });
+      // Try to get version to check if yt-dlp is available
+      await this.ytDlp.getVersion();
       
-      process.on('error', () => {
-        this.ytDlpAvailable = false;
-        this.ytDlpChecked = true;
-        resolve(false);
-      });
-      
-      // Timeout after 10 seconds
-      setTimeout(() => {
-        process.kill();
-        this.ytDlpAvailable = false;
-        this.ytDlpChecked = true;
-        resolve(false);
-      }, 10000);
-    });
-  }
-
-  private async ensureYtDlp(): Promise<boolean> {
-    // First check if yt-dlp is available
-    const available = await this.checkYtDlp();
-    if (available) {
+      this.initialized = true;
+      console.log('yt-dlp-wrap initialized successfully');
       return true;
+    } catch (error) {
+      console.error('Failed to initialize yt-dlp-wrap:', error);
+      
+      // Try to download yt-dlp binary if not available
+      try {
+        console.log('Attempting to download yt-dlp binary...');
+        await YTDlpWrap.downloadFromGithub();
+        
+        // Try again after download
+        await this.ytDlp.getVersion();
+        this.initialized = true;
+        console.log('yt-dlp binary downloaded and initialized successfully');
+        return true;
+      } catch (downloadError) {
+        console.error('Failed to download yt-dlp binary:', downloadError);
+        return false;
+      }
     }
-
-    // If not available, try to install it
-    console.log('yt-dlp not found, attempting installation...');
-    return await this.installYtDlp();
-  }
-
-  private async runYtDlp(args: string[], timeout: number = 300000): Promise<{ success: boolean; output?: string; error?: string }> {
-    return new Promise((resolve) => {
-      const childProcess = spawn('yt-dlp', args, { 
-        stdio: ['ignore', 'pipe', 'pipe'],
-        cwd: this.tempDir
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      childProcess.stdout?.on('data', (data) => {
-        stdout += data.toString();
-      });
-
-      childProcess.stderr?.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      childProcess.on('close', (code) => {
-        if (code === 0) {
-          resolve({ success: true, output: stdout });
-        } else {
-          resolve({ success: false, error: stderr || `Process exited with code ${code}` });
-        }
-      });
-
-      childProcess.on('error', (error) => {
-        resolve({ success: false, error: error.message });
-      });
-
-      // Set timeout
-      setTimeout(() => {
-        childProcess.kill();
-        resolve({ success: false, error: 'Operation timed out' });
-      }, timeout);
-    });
   }
 
   async downloadVideo(url: string, quality: string = 'best'): Promise<DownloadResult> {
     try {
       await this.ensureTempDir();
       
-      // Ensure yt-dlp is available
-      const ytDlpReady = await this.ensureYtDlp();
-      if (!ytDlpReady) {
+      // Initialize yt-dlp
+      const ready = await this.initializeYtDlp();
+      if (!ready) {
         return {
           success: false,
-          error: 'Failed to install or access yt-dlp. This may be due to system restrictions in the deployment environment. yt-dlp is required for video downloading functionality.'
+          error: 'Failed to initialize yt-dlp. The video download functionality is not available in this deployment environment.'
         };
       }
 
       const outputTemplate = join(this.tempDir, `video_${uuidv4()}.%(ext)s`);
-      const args = [
+      
+      const result = await this.ytDlp.exec([
         '--format', quality,
         '--output', outputTemplate,
         '--write-info-json',
         '--no-playlist',
         url
-      ];
-
-      const result = await this.runYtDlp(args);
-      
-      if (!result.success) {
-        return {
-          success: false,
-          error: result.error || 'Unknown error occurred during download'
-        };
-      }
+      ]);
 
       // Find downloaded files
       const files = await fs.promises.readdir(this.tempDir);
@@ -233,7 +138,7 @@ export class VideoDownloaderService {
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred'
+        error: error instanceof Error ? error.message : 'Unknown error occurred during video download'
       };
     }
   }
@@ -242,33 +147,25 @@ export class VideoDownloaderService {
     try {
       await this.ensureTempDir();
       
-      // Ensure yt-dlp is available
-      const ytDlpReady = await this.ensureYtDlp();
-      if (!ytDlpReady) {
+      // Initialize yt-dlp
+      const ready = await this.initializeYtDlp();
+      if (!ready) {
         return {
           success: false,
-          error: 'Failed to install or access yt-dlp. This may be due to system restrictions in the deployment environment. yt-dlp is required for audio extraction functionality.'
+          error: 'Failed to initialize yt-dlp. The audio extraction functionality is not available in this deployment environment.'
         };
       }
 
       const outputTemplate = join(this.tempDir, `audio_${uuidv4()}.%(ext)s`);
-      const args = [
+      
+      await this.ytDlp.exec([
         '--extract-audio',
         '--audio-format', 'mp3',
         '--output', outputTemplate,
         '--write-info-json',
         '--no-playlist',
         url
-      ];
-
-      const result = await this.runYtDlp(args);
-      
-      if (!result.success) {
-        return {
-          success: false,
-          error: result.error || 'Unknown error occurred during audio extraction'
-        };
-      }
+      ]);
 
       // Find downloaded files
       const files = await fs.promises.readdir(this.tempDir);
@@ -325,7 +222,7 @@ export class VideoDownloaderService {
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred'
+        error: error instanceof Error ? error.message : 'Unknown error occurred during audio extraction'
       };
     }
   }
@@ -334,33 +231,25 @@ export class VideoDownloaderService {
     try {
       await this.ensureTempDir();
       
-      // Ensure yt-dlp is available
-      const ytDlpReady = await this.ensureYtDlp();
-      if (!ytDlpReady) {
+      // Initialize yt-dlp
+      const ready = await this.initializeYtDlp();
+      if (!ready) {
         return {
           success: false,
-          error: 'Failed to install or access yt-dlp. This may be due to system restrictions in the deployment environment. yt-dlp is required for transcript extraction functionality.'
+          error: 'Failed to initialize yt-dlp. The transcript extraction functionality is not available in this deployment environment.'
         };
       }
 
       const outputTemplate = join(this.tempDir, `transcript_${uuidv4()}`);
-      const args = [
+      
+      await this.ytDlp.exec([
         '--write-subs',
         '--write-auto-subs',
         '--sub-lang', language,
         '--skip-download',
         '--output', outputTemplate,
         url
-      ];
-
-      const result = await this.runYtDlp(args);
-      
-      if (!result.success) {
-        return {
-          success: false,
-          error: result.error || 'Unknown error occurred during transcript extraction'
-        };
-      }
+      ]);
 
       // Find subtitle files
       const files = await fs.promises.readdir(this.tempDir);
@@ -404,7 +293,7 @@ export class VideoDownloaderService {
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred'
+        error: error instanceof Error ? error.message : 'Unknown error occurred during transcript extraction'
       };
     }
   }
@@ -413,31 +302,23 @@ export class VideoDownloaderService {
     try {
       await this.ensureTempDir();
       
-      // Ensure yt-dlp is available
-      const ytDlpReady = await this.ensureYtDlp();
-      if (!ytDlpReady) {
+      // Initialize yt-dlp
+      const ready = await this.initializeYtDlp();
+      if (!ready) {
         return {
           success: false,
-          error: 'Failed to install or access yt-dlp. This may be due to system restrictions in the deployment environment. yt-dlp is required for thumbnail extraction functionality.'
+          error: 'Failed to initialize yt-dlp. The thumbnail extraction functionality is not available in this deployment environment.'
         };
       }
 
       const outputTemplate = join(this.tempDir, `thumbnail_${uuidv4()}.%(ext)s`);
-      const args = [
+      
+      await this.ytDlp.exec([
         '--write-thumbnail',
         '--skip-download',
         '--output', outputTemplate,
         url
-      ];
-
-      const result = await this.runYtDlp(args);
-      
-      if (!result.success) {
-        return {
-          success: false,
-          error: result.error || 'Unknown error occurred during thumbnail extraction'
-        };
-      }
+      ]);
 
       // Find thumbnail file
       const files = await fs.promises.readdir(this.tempDir);
@@ -464,7 +345,7 @@ export class VideoDownloaderService {
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred'
+        error: error instanceof Error ? error.message : 'Unknown error occurred during thumbnail extraction'
       };
     }
   }
@@ -473,25 +354,19 @@ export class VideoDownloaderService {
     try {
       await this.ensureTempDir();
       
-      // Ensure yt-dlp is available
-      const ytDlpReady = await this.ensureYtDlp();
-      if (!ytDlpReady) {
-        throw new Error('Failed to install or access yt-dlp. This may be due to system restrictions in the deployment environment. yt-dlp is required for metadata extraction functionality.');
+      // Initialize yt-dlp
+      const ready = await this.initializeYtDlp();
+      if (!ready) {
+        throw new Error('Failed to initialize yt-dlp. The metadata extraction functionality is not available in this deployment environment.');
       }
 
-      const args = [
+      const result = await this.ytDlp.exec([
         '--dump-json',
         '--no-playlist',
         url
-      ];
+      ]);
 
-      const result = await this.runYtDlp(args, 60000); // 1 minute timeout for metadata
-      
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to get video metadata');
-      }
-
-      const ytDlpOutput: YtDlpOutput = JSON.parse(result.output || '{}');
+      const ytDlpOutput: YtDlpOutput = JSON.parse(result);
       
       return {
         id: ytDlpOutput.id,
