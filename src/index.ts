@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import { parseAndValidateConfig } from "@smithery/sdk";
 import { CloudStorageService } from './storage.js';
-import { VideoDownloaderService } from './downloader.js';
+import { PracticalVideoDownloaderService } from './downloader.js';
 import type { CloudStorageConfig } from './types.js';
 
 const app = express();
@@ -37,7 +37,7 @@ type Config = z.infer<typeof configSchema>;
 // Lazy initialization of services
 let services: {
   storage: CloudStorageService;
-  downloader: VideoDownloaderService;
+  downloader: PracticalVideoDownloaderService;
 } | null = null;
 
 function getServices(config: Config) {
@@ -52,7 +52,7 @@ function getServices(config: Config) {
     };
 
     const storage = new CloudStorageService(storageConfig);
-    const downloader = new VideoDownloaderService(storage);
+    const downloader = new PracticalVideoDownloaderService(storage);
 
     services = { storage, downloader };
   }
@@ -307,7 +307,7 @@ export default function createServer({
               text: `❌ Transcript extraction failed: ${result.error}\n\n📱 Platform: ${platform.toUpperCase()}\n💡 Tip: Not all videos have transcripts available. ${getPlatformTip(platform)}`
             }
           ]
-        };
+        ];
       }
     } catch (error) {
       return {
@@ -352,7 +352,7 @@ export default function createServer({
               text: `❌ Thumbnail extraction failed: ${result.error}\n\n📱 Platform: ${platform.toUpperCase()}\n💡 Tip: ${getPlatformTip(platform)}`
             }
           ]
-        };
+        ];
       }
     } catch (error) {
       return {
