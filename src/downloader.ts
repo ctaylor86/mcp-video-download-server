@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
+// Fix the import syntax for yt-dlp-wrap
 import YTDlpWrap from 'yt-dlp-wrap';
 import type { VideoMetadata, DownloadResult, TranscriptResult, ThumbnailResult, YtDlpOutput } from './types.js';
 import { CloudStorageService } from './storage.js';
@@ -9,13 +10,14 @@ import { CloudStorageService } from './storage.js';
 export class VideoDownloaderService {
   private storageService: CloudStorageService;
   private tempDir: string;
-  private ytDlp: YTDlpWrap;
+  private ytDlp: any;
   private initialized: boolean = false;
 
   constructor(storageService: CloudStorageService) {
     this.storageService = storageService;
     this.tempDir = join(tmpdir(), 'mcp-video-downloader');
-    this.ytDlp = new YTDlpWrap();
+    // Initialize yt-dlp-wrap with correct syntax
+    this.ytDlp = new (YTDlpWrap as any)();
   }
 
   async ensureTempDir(): Promise<void> {
@@ -46,7 +48,7 @@ export class VideoDownloaderService {
       // Try to download yt-dlp binary if not available
       try {
         console.log('Attempting to download yt-dlp binary...');
-        await YTDlpWrap.downloadFromGithub();
+        await (YTDlpWrap as any).downloadFromGithub();
         
         // Try again after download
         await this.ytDlp.getVersion();
