@@ -1,23 +1,18 @@
 import * as fs from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
-// Fix the import syntax for yt-dlp-wrap
-import YTDlpWrap from 'yt-dlp-wrap';
 import type { VideoMetadata, DownloadResult, TranscriptResult, ThumbnailResult, YtDlpOutput } from './types.js';
 import { CloudStorageService } from './storage.js';
 
 export class VideoDownloaderService {
   private storageService: CloudStorageService;
   private tempDir: string;
-  private ytDlp: any;
-  private initialized: boolean = false;
 
   constructor(storageService: CloudStorageService) {
     this.storageService = storageService;
     this.tempDir = join(tmpdir(), 'mcp-video-downloader');
-    // Initialize yt-dlp-wrap with correct syntax
-    this.ytDlp = new (YTDlpWrap as any)();
   }
 
   async ensureTempDir(): Promise<void> {
@@ -28,56 +23,45 @@ export class VideoDownloaderService {
     }
   }
 
-  private async initializeYtDlp(): Promise<boolean> {
-    if (this.initialized) {
-      return true;
-    }
+  private async runYtDlp(args: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const process = spawn('yt-dlp', args, {
+        cwd: this.tempDir,
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
 
-    try {
-      console.log('Initializing yt-dlp-wrap...');
-      
-      // Try to get version to check if yt-dlp is available
-      await this.ytDlp.getVersion();
-      
-      this.initialized = true;
-      console.log('yt-dlp-wrap initialized successfully');
-      return true;
-    } catch (error) {
-      console.error('Failed to initialize yt-dlp-wrap:', error);
-      
-      // Try to download yt-dlp binary if not available
-      try {
-        console.log('Attempting to download yt-dlp binary...');
-        await (YTDlpWrap as any).downloadFromGithub();
-        
-        // Try again after download
-        await this.ytDlp.getVersion();
-        this.initialized = true;
-        console.log('yt-dlp binary downloaded and initialized successfully');
-        return true;
-      } catch (downloadError) {
-        console.error('Failed to download yt-dlp binary:', downloadError);
-        return false;
-      }
-    }
+      let stdout = '';
+      let stderr = '';
+
+      process.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      process.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      process.on('close', (code) => {
+        if (code === 0) {
+          resolve(stdout);
+        } else {
+          reject(new Error(`yt-dlp failed with code ${code}: ${stderr}`));
+        }
+      });
+
+      process.on('error', (error) => {
+        reject(new Error(`Failed to spawn yt-dlp: ${error.message}`));
+      });
+    });
   }
 
   async downloadVideo(url: string, quality: string = 'best'): Promise<DownloadResult> {
     try {
       await this.ensureTempDir();
       
-      // Initialize yt-dlp
-      const ready = await this.initializeYtDlp();
-      if (!ready) {
-        return {
-          success: false,
-          error: 'Failed to initialize yt-dlp. The video download functionality is not available in this deployment environment.'
-        };
-      }
-
       const outputTemplate = join(this.tempDir, `video_${uuidv4()}.%(ext)s`);
       
-      const result = await this.ytDlp.exec([
+      await this.runYtDlp([
         '--format', quality,
         '--output', outputTemplate,
         '--write-info-json',
@@ -129,6 +113,16 @@ export class VideoDownloaderService {
       // Upload to cloud storage
       const publicUrl = await this.storageService.uploadFile(videoPath, 'videos/');
 
+      // Clean up local files
+      try {
+        await fs.promises.unlink(videoPath);
+        if (infoFile) {
+          await fs.promises.unlink(join(this.tempDir, infoFile));
+        }
+      } catch (error) {
+        console.warn('Failed to clean up local files:', error);
+      }
+
       return {
         success: true,
         publicUrl,
@@ -149,18 +143,9 @@ export class VideoDownloaderService {
     try {
       await this.ensureTempDir();
       
-      // Initialize yt-dlp
-      const ready = await this.initializeYtDlp();
-      if (!ready) {
-        return {
-          success: false,
-          error: 'Failed to initialize yt-dlp. The audio extraction functionality is not available in this deployment environment.'
-        };
-      }
-
       const outputTemplate = join(this.tempDir, `audio_${uuidv4()}.%(ext)s`);
       
-      await this.ytDlp.exec([
+      await this.runYtDlp([
         '--extract-audio',
         '--audio-format', 'mp3',
         '--output', outputTemplate,
@@ -213,6 +198,16 @@ export class VideoDownloaderService {
       // Upload to cloud storage
       const publicUrl = await this.storageService.uploadFile(audioPath, 'audio/');
 
+      // Clean up local files
+      try {
+        await fs.promises.unlink(audioPath);
+        if (infoFile) {
+          await fs.promises.unlink(join(this.tempDir, infoFile));
+        }
+      } catch (error) {
+        console.warn('Failed to clean up local files:', error);
+      }
+
       return {
         success: true,
         publicUrl,
@@ -233,18 +228,9 @@ export class VideoDownloaderService {
     try {
       await this.ensureTempDir();
       
-      // Initialize yt-dlp
-      const ready = await this.initializeYtDlp();
-      if (!ready) {
-        return {
-          success: false,
-          error: 'Failed to initialize yt-dlp. The transcript extraction functionality is not available in this deployment environment.'
-        };
-      }
-
       const outputTemplate = join(this.tempDir, `transcript_${uuidv4()}`);
       
-      await this.ytDlp.exec([
+      await this.runYtDlp([
         '--write-subs',
         '--write-auto-subs',
         '--sub-lang', language,
@@ -284,6 +270,14 @@ export class VideoDownloaderService {
       // Upload to cloud storage
       const publicUrl = await this.storageService.uploadFile(cleanPath, 'transcripts/');
 
+      // Clean up local files
+      try {
+        await fs.promises.unlink(subPath);
+        await fs.promises.unlink(cleanPath);
+      } catch (error) {
+        console.warn('Failed to clean up local files:', error);
+      }
+
       return {
         success: true,
         publicUrl,
@@ -304,18 +298,9 @@ export class VideoDownloaderService {
     try {
       await this.ensureTempDir();
       
-      // Initialize yt-dlp
-      const ready = await this.initializeYtDlp();
-      if (!ready) {
-        return {
-          success: false,
-          error: 'Failed to initialize yt-dlp. The thumbnail extraction functionality is not available in this deployment environment.'
-        };
-      }
-
       const outputTemplate = join(this.tempDir, `thumbnail_${uuidv4()}.%(ext)s`);
       
-      await this.ytDlp.exec([
+      await this.runYtDlp([
         '--write-thumbnail',
         '--skip-download',
         '--output', outputTemplate,
@@ -338,6 +323,13 @@ export class VideoDownloaderService {
       // Upload to cloud storage
       const publicUrl = await this.storageService.uploadFile(thumbnailPath, 'thumbnails/');
 
+      // Clean up local files
+      try {
+        await fs.promises.unlink(thumbnailPath);
+      } catch (error) {
+        console.warn('Failed to clean up local files:', error);
+      }
+
       return {
         success: true,
         publicUrl,
@@ -356,13 +348,7 @@ export class VideoDownloaderService {
     try {
       await this.ensureTempDir();
       
-      // Initialize yt-dlp
-      const ready = await this.initializeYtDlp();
-      if (!ready) {
-        throw new Error('Failed to initialize yt-dlp. The metadata extraction functionality is not available in this deployment environment.');
-      }
-
-      const result = await this.ytDlp.exec([
+      const result = await this.runYtDlp([
         '--dump-json',
         '--no-playlist',
         url
