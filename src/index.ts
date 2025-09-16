@@ -2,7 +2,6 @@ import express, { Request, Response } from "express";
 import cors from "cors";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { parseAndValidateConfig } from "@smithery/sdk";
 import { CloudStorageService } from './storage.js';
@@ -14,9 +13,11 @@ const PORT = process.env.PORT || 8081;
 
 // CORS configuration for browser-based MCP clients
 app.use(cors({
-  origin: '*', // Configure appropriately for production
-  exposedHeaders: ['Mcp-Session-Id', 'mcp-protocol-version'],
-  allowedHeaders: ['Content-Type', 'mcp-session-id'],
+  origin: '*',
+  credentials: true,
+  exposedHeaders: ['mcp-session-id', 'mcp-protocol-version'],
+  allowedHeaders: ['Content-Type', 'Authorization', '*'],
+  methods: ['GET', 'POST', 'OPTIONS']
 }));
 
 app.use(express.json());
@@ -216,7 +217,7 @@ export default function createServer({
               text: `❌ Transcript extraction failed: ${result.error}`
             }
           ]
-        };
+        ];
       }
     } catch (error) {
       return {
@@ -259,7 +260,7 @@ export default function createServer({
               text: `❌ Thumbnail extraction failed: ${result.error}`
             }
           ]
-        };
+        ];
       }
     } catch (error) {
       return {
@@ -341,25 +342,25 @@ app.all('/mcp', async (req: Request, res: Response) => {
   }
 });
 
-// Main function to start the server in the appropriate mode
-async function main() {
-  const transport = process.env.TRANSPORT || 'stdio';
-  
-  if (transport === 'http') {
-    // Run in HTTP mode
-    app.listen(PORT, () => {
-      console.log(`MCP HTTP Server listening on port ${PORT}`);
-    });
-  } else {
-    // STDIO mode for local development
-    console.error("STDIO mode not supported in container deployment");
-    process.exit(1);
-  }
-}
+// Handle OPTIONS preflight requests
+app.options('/mcp', (req: Request, res: Response) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, *');
+  res.header('Access-Control-Expose-Headers', 'mcp-session-id, mcp-protocol-version');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.sendStatus(200);
+});
 
-// Start the server
-main().catch((error) => {
-  console.error("Server error:", error);
-  process.exit(1);
+// Health check endpoint
+app.get('/health', (req: Request, res: Response) => {
+  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+});
+
+// Start the server in HTTP mode (required for container deployment)
+app.listen(PORT, () => {
+  console.log(`MCP HTTP Server listening on port ${PORT}`);
+  console.log(`Health check available at http://localhost:${PORT}/health`);
+  console.log(`MCP endpoint available at http://localhost:${PORT}/mcp`);
 });
 
