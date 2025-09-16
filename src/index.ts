@@ -7,7 +7,7 @@ import { z } from "zod";
 import { parseAndValidateConfig } from "@smithery/sdk";
 import { CloudStorageService } from './storage.js';
 import { VideoDownloaderService } from './downloader.js';
-import type { S3Config } from './types.js';
+import type { CloudStorageConfig } from './types.js';
 
 const app = express();
 const PORT = process.env.PORT || 8081;
@@ -41,7 +41,7 @@ let services: {
 
 function getServices(config: Config) {
   if (!services) {
-    const storageConfig: S3Config = {
+    const storageConfig: CloudStorageConfig = {
       endpoint: config.s3Endpoint,
       region: config.s3Region,
       accessKeyId: config.s3AccessKeyId,
@@ -77,27 +77,16 @@ export default function createServer({
   }, async () => {
     try {
       const { storage } = getServices(config);
-      const result = await storage.testConnection();
+      await storage.testConnection();
       
-      if (result.success) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `✅ S3 Connection Test Successful!\n\n📋 Configuration:\n• Endpoint: ${config.s3Endpoint}\n• Region: ${config.s3Region}\n• Bucket: ${config.s3BucketName}\n• Access Key: ${config.s3AccessKeyId.substring(0, 8)}...\n\n🔗 Connection Details:\n${result.details}`
-            }
-          ]
-        };
-      } else {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `❌ S3 Connection Test Failed!\n\nError: ${result.error}\n\n📋 Configuration:\n• Endpoint: ${config.s3Endpoint}\n• Region: ${config.s3Region}\n• Bucket: ${config.s3BucketName}`
-            }
-          ]
-        };
-      }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `✅ S3 Connection Test Successful!\n\n📋 Configuration:\n• Endpoint: ${config.s3Endpoint}\n• Region: ${config.s3Region}\n• Bucket: ${config.s3BucketName}\n• Access Key: ${config.s3AccessKeyId.substring(0, 8)}...`
+          }
+        ]
+      };
     } catch (error) {
       return {
         content: [
@@ -121,14 +110,14 @@ export default function createServer({
   }, async ({ url, quality }: { url: string; quality?: string }) => {
     try {
       const { downloader } = getServices(config);
-      const result = await downloader.downloadVideo(url, quality);
+      const result = await downloader.downloadVideo(url, quality || 'best');
       
-      if (result.success && result.data) {
+      if (result.success) {
         return {
           content: [
             {
               type: 'text',
-              text: `✅ Video downloaded successfully!\n\n📁 File Details:\n• Filename: ${result.data.filename}\n• Size: ${result.data.size} bytes\n• Format: ${result.data.format}\n\n🔗 Cloud Storage:\n• URL: ${result.data.url}\n• Path: ${result.data.path}`
+              text: `✅ Video downloaded successfully!\n\n📁 File Details:\n• Filename: ${result.filename}\n• Size: ${result.fileSize} bytes\n• URL: ${result.publicUrl}\n\n📊 Metadata:\n• Title: ${result.metadata?.title || 'N/A'}\n• Duration: ${result.metadata?.duration || 'N/A'} seconds\n• Uploader: ${result.metadata?.uploader || 'N/A'}`
             }
           ]
         };
@@ -159,20 +148,19 @@ export default function createServer({
     title: "Download Audio to Cloud",
     description: "Extract audio from a video URL and upload it to cloud storage",
     inputSchema: {
-      url: z.string().describe('Video URL to extract audio from'),
-      format: z.string().optional().describe('Audio format (default: mp3)')
+      url: z.string().describe('Video URL to extract audio from')
     }
-  }, async ({ url, format }: { url: string; format?: string }) => {
+  }, async ({ url }: { url: string }) => {
     try {
       const { downloader } = getServices(config);
-      const result = await downloader.downloadAudio(url, format);
+      const result = await downloader.downloadAudio(url);
       
-      if (result.success && result.data) {
+      if (result.success) {
         return {
           content: [
             {
               type: 'text',
-              text: `✅ Audio extracted successfully!\n\n📁 File Details:\n• Filename: ${result.data.filename}\n• Size: ${result.data.size} bytes\n• Format: ${result.data.format}\n\n🔗 Cloud Storage:\n• URL: ${result.data.url}\n• Path: ${result.data.path}`
+              text: `✅ Audio extracted successfully!\n\n📁 File Details:\n• Filename: ${result.filename}\n• Size: ${result.fileSize} bytes\n• URL: ${result.publicUrl}\n\n📊 Metadata:\n• Title: ${result.metadata?.title || 'N/A'}\n• Duration: ${result.metadata?.duration || 'N/A'} seconds\n• Uploader: ${result.metadata?.uploader || 'N/A'}`
             }
           ]
         };
@@ -209,14 +197,14 @@ export default function createServer({
   }, async ({ url, language }: { url: string; language?: string }) => {
     try {
       const { downloader } = getServices(config);
-      const result = await downloader.extractTranscript(url, language);
+      const result = await downloader.extractTranscript(url, language || 'en');
       
-      if (result.success && result.data) {
+      if (result.success) {
         return {
           content: [
             {
               type: 'text',
-              text: `✅ Transcript extracted successfully!\n\n📁 File Details:\n• Filename: ${result.data.filename}\n• Size: ${result.data.size} bytes\n• Language: ${result.data.language || 'auto-detected'}\n\n🔗 Cloud Storage:\n• URL: ${result.data.url}\n• Path: ${result.data.path}`
+              text: `✅ Transcript extracted successfully!\n\n📁 File Details:\n• Filename: ${result.filename}\n• Language: ${result.language || 'auto-detected'}\n• URL: ${result.publicUrl}\n\n📝 Preview:\n${result.transcript ? result.transcript.substring(0, 200) + '...' : 'Transcript content available at URL'}`
             }
           ]
         };
@@ -254,12 +242,12 @@ export default function createServer({
       const { downloader } = getServices(config);
       const result = await downloader.extractThumbnail(url);
       
-      if (result.success && result.data) {
+      if (result.success) {
         return {
           content: [
             {
               type: 'text',
-              text: `✅ Thumbnail extracted successfully!\n\n📁 File Details:\n• Filename: ${result.data.filename}\n• Size: ${result.data.size} bytes\n• Format: ${result.data.format}\n\n🔗 Cloud Storage:\n• URL: ${result.data.url}\n• Path: ${result.data.path}`
+              text: `✅ Thumbnail extracted successfully!\n\n📁 File Details:\n• Filename: ${result.filename}\n• URL: ${result.publicUrl}`
             }
           ]
         };
@@ -295,28 +283,16 @@ export default function createServer({
   }, async ({ url }: { url: string }) => {
     try {
       const { downloader } = getServices(config);
-      const result = await downloader.getVideoMetadata(url);
+      const metadata = await downloader.getVideoMetadata(url);
       
-      if (result.success && result.data) {
-        const metadata = result.data;
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `📊 Video Metadata:\n\n📹 Basic Info:\n• Title: ${metadata.title}\n• Duration: ${metadata.duration} seconds\n• Uploader: ${metadata.uploader}\n• View Count: ${metadata.viewCount?.toLocaleString() || 'N/A'}\n\n🎥 Technical Details:\n• Resolution: ${metadata.width}x${metadata.height}\n• Format: ${metadata.format}\n• File Size: ${metadata.filesize ? `${(metadata.filesize / 1024 / 1024).toFixed(2)} MB` : 'N/A'}\n\n📝 Description:\n${metadata.description ? metadata.description.substring(0, 200) + '...' : 'No description available'}`
-            }
-          ]
-        };
-      } else {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `❌ Failed to get video metadata: ${result.error}`
-            }
-          ]
-        };
-      }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `📊 Video Metadata:\n\n📹 Basic Info:\n• Title: ${metadata.title}\n• Duration: ${metadata.duration} seconds\n• Uploader: ${metadata.uploader}\n• View Count: ${metadata.viewCount?.toLocaleString() || 'N/A'}\n\n🎥 Technical Details:\n• Video ID: ${metadata.id}\n• Extractor: ${metadata.extractor}\n• Upload Date: ${metadata.uploadDate || 'N/A'}\n\n📝 Description:\n${metadata.description ? metadata.description.substring(0, 200) + '...' : 'No description available'}`
+          }
+        ]
+      };
     } catch (error) {
       return {
         content: [
@@ -337,7 +313,7 @@ app.all('/mcp', async (req: Request, res: Response) => {
   try {
     const result = parseAndValidateConfig(req, configSchema);
     if (result.error) {
-      return res.status(result.value.status).json(result.value);
+      return res.status(result.value?.status || 400).json(result.value);
     }
 
     const server = createServer({ config: result.value });
