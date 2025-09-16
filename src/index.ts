@@ -257,7 +257,7 @@ export default function createServer({ config }: { config: z.infer<typeof config
                 text: `❌ Thumbnail extraction failed: ${result.error}`
               }
             ]
-          ];
+          };
         }
       } catch (error) {
         return {
