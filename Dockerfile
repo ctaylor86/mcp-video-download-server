@@ -8,8 +8,8 @@ RUN apk add --no-cache \
     ffmpeg \
     && ln -sf python3 /usr/bin/python
 
-# Install yt-dlp via pip
-RUN pip3 install --no-cache-dir yt-dlp
+# Install yt-dlp via pip with --break-system-packages flag
+RUN pip3 install --no-cache-dir --break-system-packages yt-dlp
 
 # Set working directory
 WORKDIR /app
