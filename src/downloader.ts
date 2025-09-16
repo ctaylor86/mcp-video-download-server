@@ -11,11 +11,11 @@ export class VideoDownloaderService {
   private tempDir: string;
   private ytDlpChecked: boolean = false;
   private ytDlpAvailable: boolean = false;
+  private installationAttempted: boolean = false;
 
   constructor(storageService: CloudStorageService) {
     this.storageService = storageService;
     this.tempDir = join(tmpdir(), 'mcp-video-downloader');
-    // Don't check yt-dlp during construction to avoid startup delays
   }
 
   async ensureTempDir(): Promise<void> {
@@ -26,9 +26,47 @@ export class VideoDownloaderService {
     }
   }
 
-  private async checkYtDlp(): Promise<boolean> {
-    if (this.ytDlpChecked) {
+  private async installYtDlp(): Promise<boolean> {
+    if (this.installationAttempted) {
       return this.ytDlpAvailable;
+    }
+
+    this.installationAttempted = true;
+    console.log('Attempting to install yt-dlp...');
+
+    return new Promise((resolve) => {
+      // Try installing yt-dlp via pip
+      const installProcess = spawn('pip', ['install', 'yt-dlp'], { stdio: 'pipe' });
+      
+      installProcess.on('close', async (code) => {
+        if (code === 0) {
+          console.log('yt-dlp installation completed, checking availability...');
+          // Check if installation was successful
+          const available = await this.checkYtDlp();
+          resolve(available);
+        } else {
+          console.error('Failed to install yt-dlp via pip');
+          resolve(false);
+        }
+      });
+      
+      installProcess.on('error', (error) => {
+        console.error('Error installing yt-dlp:', error);
+        resolve(false);
+      });
+      
+      // Timeout after 60 seconds
+      setTimeout(() => {
+        installProcess.kill();
+        console.error('yt-dlp installation timed out');
+        resolve(false);
+      }, 60000);
+    });
+  }
+
+  private async checkYtDlp(): Promise<boolean> {
+    if (this.ytDlpChecked && this.ytDlpAvailable) {
+      return true;
     }
 
     return new Promise((resolve) => {
@@ -37,6 +75,9 @@ export class VideoDownloaderService {
       process.on('close', (code) => {
         this.ytDlpAvailable = code === 0;
         this.ytDlpChecked = true;
+        if (this.ytDlpAvailable) {
+          console.log('yt-dlp is available and working');
+        }
         resolve(this.ytDlpAvailable);
       });
       
@@ -56,121 +97,130 @@ export class VideoDownloaderService {
     });
   }
 
-  private async runYtDlp(args: string[]): Promise<{ stdout: string; stderr: string }> {
-    // Check yt-dlp availability first
+  private async ensureYtDlp(): Promise<boolean> {
+    // First check if yt-dlp is available
     const available = await this.checkYtDlp();
-    if (!available) {
-      throw new Error('yt-dlp is not available or not working. Please ensure yt-dlp is installed and accessible.');
+    if (available) {
+      return true;
     }
 
-    return new Promise((resolve, reject) => {
+    // If not available, try to install it
+    console.log('yt-dlp not found, attempting installation...');
+    return await this.installYtDlp();
+  }
+
+  private async runYtDlp(args: string[], timeout: number = 300000): Promise<{ success: boolean; output?: string; error?: string }> {
+    return new Promise((resolve) => {
       const childProcess = spawn('yt-dlp', args, { 
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env }
+        stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: this.tempDir
       });
 
       let stdout = '';
       let stderr = '';
 
-      childProcess.stdout?.on('data', (data: Buffer) => {
+      childProcess.stdout?.on('data', (data) => {
         stdout += data.toString();
       });
 
-      childProcess.stderr?.on('data', (data: Buffer) => {
+      childProcess.stderr?.on('data', (data) => {
         stderr += data.toString();
       });
 
-      childProcess.on('close', (code: number | null) => {
+      childProcess.on('close', (code) => {
         if (code === 0) {
-          resolve({ stdout, stderr });
+          resolve({ success: true, output: stdout });
         } else {
-          reject(new Error(`yt-dlp exited with code ${code}: ${stderr}`));
+          resolve({ success: false, error: stderr || `Process exited with code ${code}` });
         }
       });
 
-      childProcess.on('error', (error: Error) => {
-        reject(error);
+      childProcess.on('error', (error) => {
+        resolve({ success: false, error: error.message });
       });
 
-      // Add timeout for individual operations
+      // Set timeout
       setTimeout(() => {
         childProcess.kill();
-        reject(new Error('yt-dlp operation timed out'));
-      }, 300000); // 5 minute timeout
+        resolve({ success: false, error: 'Operation timed out' });
+      }, timeout);
     });
   }
 
-  async getVideoMetadata(url: string): Promise<VideoMetadata> {
-    try {
-      const args = [
-        '--dump-json',
-        '--no-download',
-        url
-      ];
-
-      const { stdout } = await this.runYtDlp(args);
-      const metadata: YtDlpOutput = JSON.parse(stdout.trim());
-
-      return {
-        id: metadata.id,
-        title: metadata.title,
-        description: metadata.description,
-        duration: metadata.duration,
-        uploader: metadata.uploader,
-        uploadDate: metadata.upload_date,
-        viewCount: metadata.view_count,
-        likeCount: metadata.like_count,
-        thumbnail: metadata.thumbnail,
-        webpage_url: metadata.webpage_url,
-        extractor: metadata.extractor,
-        formats: metadata.formats?.map(f => ({
-          format_id: f.format_id,
-          ext: f.ext,
-          resolution: f.resolution,
-          filesize: f.filesize,
-          url: f.url,
-          quality: f.quality
-        }))
-      };
-    } catch (error) {
-      throw new Error(`Failed to get video metadata: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-
   async downloadVideo(url: string, quality: string = 'best'): Promise<DownloadResult> {
-    await this.ensureTempDir();
-    
-    const sessionId = uuidv4();
-    const outputTemplate = join(this.tempDir, `video_${sessionId}.%(ext)s`);
-
     try {
-      // Get metadata first (this will also check yt-dlp availability)
-      const metadata = await this.getVideoMetadata(url);
+      await this.ensureTempDir();
+      
+      // Ensure yt-dlp is available
+      const ytDlpReady = await this.ensureYtDlp();
+      if (!ytDlpReady) {
+        return {
+          success: false,
+          error: 'Failed to install or access yt-dlp. This may be due to system restrictions in the deployment environment. yt-dlp is required for video downloading functionality.'
+        };
+      }
 
+      const outputTemplate = join(this.tempDir, `video_${uuidv4()}.%(ext)s`);
       const args = [
         '--format', quality,
         '--output', outputTemplate,
+        '--write-info-json',
+        '--no-playlist',
         url
       ];
 
-      await this.runYtDlp(args);
-
-      // Find the downloaded file
-      const files = await fs.promises.readdir(this.tempDir);
-      const videoFile = files.find(f => f.startsWith(`video_${sessionId}.`));
+      const result = await this.runYtDlp(args);
       
-      if (!videoFile) {
-        throw new Error('Downloaded video file not found');
+      if (!result.success) {
+        return {
+          success: false,
+          error: result.error || 'Unknown error occurred during download'
+        };
       }
 
-      const localPath = join(this.tempDir, videoFile);
-      const stats = await fs.promises.stat(localPath);
-      
-      // Upload to cloud storage
-      const publicUrl = await this.storageService.uploadFile(localPath, 'videos/');
+      // Find downloaded files
+      const files = await fs.promises.readdir(this.tempDir);
+      const videoFile = files.find(f => f.startsWith('video_') && !f.endsWith('.info.json'));
+      const infoFile = files.find(f => f.startsWith('video_') && f.endsWith('.info.json'));
 
-      // Clean up local file
-      await fs.promises.unlink(localPath);
+      if (!videoFile) {
+        return {
+          success: false,
+          error: 'Video file not found after download'
+        };
+      }
+
+      const videoPath = join(this.tempDir, videoFile);
+      const stats = await fs.promises.stat(videoPath);
+      
+      // Parse metadata if available
+      let metadata: VideoMetadata | undefined;
+      if (infoFile) {
+        try {
+          const infoPath = join(this.tempDir, infoFile);
+          const infoContent = await fs.promises.readFile(infoPath, 'utf-8');
+          const ytDlpOutput: YtDlpOutput = JSON.parse(infoContent);
+          
+          metadata = {
+            id: ytDlpOutput.id,
+            title: ytDlpOutput.title,
+            description: ytDlpOutput.description,
+            duration: ytDlpOutput.duration,
+            uploader: ytDlpOutput.uploader,
+            uploadDate: ytDlpOutput.upload_date,
+            viewCount: ytDlpOutput.view_count,
+            likeCount: ytDlpOutput.like_count,
+            thumbnail: ytDlpOutput.thumbnail,
+            webpage_url: ytDlpOutput.webpage_url,
+            extractor: ytDlpOutput.extractor,
+          };
+        } catch (error) {
+          console.warn('Failed to parse video metadata:', error);
+        }
+      }
+
+      // Upload to cloud storage
+      const publicUrl = await this.storageService.uploadFile(videoPath, 'videos/');
 
       return {
         success: true,
@@ -179,50 +229,90 @@ export class VideoDownloaderService {
         fileSize: stats.size,
         metadata
       };
+
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
       };
     }
   }
 
   async downloadAudio(url: string): Promise<DownloadResult> {
-    await this.ensureTempDir();
-    
-    const sessionId = uuidv4();
-    const outputTemplate = join(this.tempDir, `audio_${sessionId}.%(ext)s`);
-
     try {
-      // Get metadata first
-      const metadata = await this.getVideoMetadata(url);
+      await this.ensureTempDir();
+      
+      // Ensure yt-dlp is available
+      const ytDlpReady = await this.ensureYtDlp();
+      if (!ytDlpReady) {
+        return {
+          success: false,
+          error: 'Failed to install or access yt-dlp. This may be due to system restrictions in the deployment environment. yt-dlp is required for audio extraction functionality.'
+        };
+      }
 
+      const outputTemplate = join(this.tempDir, `audio_${uuidv4()}.%(ext)s`);
       const args = [
         '--extract-audio',
         '--audio-format', 'mp3',
-        '--audio-quality', '0', // Best quality
         '--output', outputTemplate,
+        '--write-info-json',
+        '--no-playlist',
         url
       ];
 
-      await this.runYtDlp(args);
-
-      // Find the downloaded file
-      const files = await fs.promises.readdir(this.tempDir);
-      const audioFile = files.find(f => f.startsWith(`audio_${sessionId}.`));
+      const result = await this.runYtDlp(args);
       
-      if (!audioFile) {
-        throw new Error('Downloaded audio file not found');
+      if (!result.success) {
+        return {
+          success: false,
+          error: result.error || 'Unknown error occurred during audio extraction'
+        };
       }
 
-      const localPath = join(this.tempDir, audioFile);
-      const stats = await fs.promises.stat(localPath);
-      
-      // Upload to cloud storage
-      const publicUrl = await this.storageService.uploadFile(localPath, 'audio/');
+      // Find downloaded files
+      const files = await fs.promises.readdir(this.tempDir);
+      const audioFile = files.find(f => f.startsWith('audio_') && f.endsWith('.mp3'));
+      const infoFile = files.find(f => f.startsWith('audio_') && f.endsWith('.info.json'));
 
-      // Clean up local file
-      await fs.promises.unlink(localPath);
+      if (!audioFile) {
+        return {
+          success: false,
+          error: 'Audio file not found after extraction'
+        };
+      }
+
+      const audioPath = join(this.tempDir, audioFile);
+      const stats = await fs.promises.stat(audioPath);
+      
+      // Parse metadata if available
+      let metadata: VideoMetadata | undefined;
+      if (infoFile) {
+        try {
+          const infoPath = join(this.tempDir, infoFile);
+          const infoContent = await fs.promises.readFile(infoPath, 'utf-8');
+          const ytDlpOutput: YtDlpOutput = JSON.parse(infoContent);
+          
+          metadata = {
+            id: ytDlpOutput.id,
+            title: ytDlpOutput.title,
+            description: ytDlpOutput.description,
+            duration: ytDlpOutput.duration,
+            uploader: ytDlpOutput.uploader,
+            uploadDate: ytDlpOutput.upload_date,
+            viewCount: ytDlpOutput.view_count,
+            likeCount: ytDlpOutput.like_count,
+            thumbnail: ytDlpOutput.thumbnail,
+            webpage_url: ytDlpOutput.webpage_url,
+            extractor: ytDlpOutput.extractor,
+          };
+        } catch (error) {
+          console.warn('Failed to parse video metadata:', error);
+        }
+      }
+
+      // Upload to cloud storage
+      const publicUrl = await this.storageService.uploadFile(audioPath, 'audio/');
 
       return {
         success: true,
@@ -231,81 +321,108 @@ export class VideoDownloaderService {
         fileSize: stats.size,
         metadata
       };
+
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
       };
     }
   }
 
   async extractTranscript(url: string, language: string = 'en'): Promise<TranscriptResult> {
-    await this.ensureTempDir();
-    
-    const sessionId = uuidv4();
-    const outputTemplate = join(this.tempDir, `transcript_${sessionId}`);
-
     try {
+      await this.ensureTempDir();
+      
+      // Ensure yt-dlp is available
+      const ytDlpReady = await this.ensureYtDlp();
+      if (!ytDlpReady) {
+        return {
+          success: false,
+          error: 'Failed to install or access yt-dlp. This may be due to system restrictions in the deployment environment. yt-dlp is required for transcript extraction functionality.'
+        };
+      }
+
+      const outputTemplate = join(this.tempDir, `transcript_${uuidv4()}`);
       const args = [
         '--write-subs',
         '--write-auto-subs',
         '--sub-lang', language,
-        '--sub-format', 'srt',
         '--skip-download',
         '--output', outputTemplate,
         url
       ];
 
-      await this.runYtDlp(args);
-
-      // Find the subtitle file
-      const files = await fs.promises.readdir(this.tempDir);
-      const subtitleFile = files.find(f => f.startsWith(`transcript_${sessionId}`) && f.endsWith('.srt'));
+      const result = await this.runYtDlp(args);
       
-      if (!subtitleFile) {
-        throw new Error('Subtitle file not found');
+      if (!result.success) {
+        return {
+          success: false,
+          error: result.error || 'Unknown error occurred during transcript extraction'
+        };
       }
 
-      const localPath = join(this.tempDir, subtitleFile);
-      const subtitleContent = await fs.promises.readFile(localPath, 'utf-8');
-      
-      // Clean transcript (remove timestamps and formatting)
-      const cleanTranscript = this.cleanSubtitles(subtitleContent);
-      
-      // Create clean transcript file
-      const transcriptFileName = `transcript_${sessionId}.txt`;
-      const transcriptPath = join(this.tempDir, transcriptFileName);
-      await fs.promises.writeFile(transcriptPath, cleanTranscript, 'utf-8');
-      
-      // Upload to cloud storage
-      const publicUrl = await this.storageService.uploadFile(transcriptPath, 'transcripts/');
+      // Find subtitle files
+      const files = await fs.promises.readdir(this.tempDir);
+      const subFile = files.find(f => f.startsWith('transcript_') && (f.endsWith('.vtt') || f.endsWith('.srt')));
 
-      // Clean up local files
-      await fs.promises.unlink(localPath);
-      await fs.promises.unlink(transcriptPath);
+      if (!subFile) {
+        return {
+          success: false,
+          error: `No subtitles found for language '${language}'. The video may not have subtitles available.`
+        };
+      }
+
+      const subPath = join(this.tempDir, subFile);
+      let transcript = await fs.promises.readFile(subPath, 'utf-8');
+      
+      // Clean up subtitle formatting (basic cleanup)
+      transcript = transcript
+        .replace(/^\d+$/gm, '') // Remove subtitle numbers
+        .replace(/\d{2}:\d{2}:\d{2}[.,]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[.,]\d{3}/g, '') // Remove timestamps
+        .replace(/^WEBVTT$/gm, '') // Remove WEBVTT header
+        .replace(/^\s*$/gm, '') // Remove empty lines
+        .replace(/\n{3,}/g, '\n\n') // Reduce multiple newlines
+        .trim();
+
+      // Create clean text file
+      const cleanFileName = `transcript_${uuidv4()}.txt`;
+      const cleanPath = join(this.tempDir, cleanFileName);
+      await fs.promises.writeFile(cleanPath, transcript, 'utf-8');
+
+      // Upload to cloud storage
+      const publicUrl = await this.storageService.uploadFile(cleanPath, 'transcripts/');
 
       return {
         success: true,
         publicUrl,
-        filename: transcriptFileName,
-        transcript: cleanTranscript,
+        filename: cleanFileName,
+        transcript,
         language
       };
+
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
       };
     }
   }
 
   async extractThumbnail(url: string): Promise<ThumbnailResult> {
-    await this.ensureTempDir();
-    
-    const sessionId = uuidv4();
-    const outputTemplate = join(this.tempDir, `thumbnail_${sessionId}.%(ext)s`);
-
     try {
+      await this.ensureTempDir();
+      
+      // Ensure yt-dlp is available
+      const ytDlpReady = await this.ensureYtDlp();
+      if (!ytDlpReady) {
+        return {
+          success: false,
+          error: 'Failed to install or access yt-dlp. This may be due to system restrictions in the deployment environment. yt-dlp is required for thumbnail extraction functionality.'
+        };
+      }
+
+      const outputTemplate = join(this.tempDir, `thumbnail_${uuidv4()}.%(ext)s`);
       const args = [
         '--write-thumbnail',
         '--skip-download',
@@ -313,64 +430,87 @@ export class VideoDownloaderService {
         url
       ];
 
-      await this.runYtDlp(args);
-
-      // Find the thumbnail file
-      const files = await fs.promises.readdir(this.tempDir);
-      const thumbnailFile = files.find(f => f.startsWith(`thumbnail_${sessionId}.`));
+      const result = await this.runYtDlp(args);
       
-      if (!thumbnailFile) {
-        throw new Error('Thumbnail file not found');
+      if (!result.success) {
+        return {
+          success: false,
+          error: result.error || 'Unknown error occurred during thumbnail extraction'
+        };
       }
 
-      const localPath = join(this.tempDir, thumbnailFile);
-      
-      // Upload to cloud storage
-      const publicUrl = await this.storageService.uploadFile(localPath, 'thumbnails/');
+      // Find thumbnail file
+      const files = await fs.promises.readdir(this.tempDir);
+      const thumbnailFile = files.find(f => f.startsWith('thumbnail_') && (f.endsWith('.jpg') || f.endsWith('.png') || f.endsWith('.webp')));
 
-      // Clean up local file
-      await fs.promises.unlink(localPath);
+      if (!thumbnailFile) {
+        return {
+          success: false,
+          error: 'Thumbnail file not found after extraction'
+        };
+      }
+
+      const thumbnailPath = join(this.tempDir, thumbnailFile);
+
+      // Upload to cloud storage
+      const publicUrl = await this.storageService.uploadFile(thumbnailPath, 'thumbnails/');
 
       return {
         success: true,
         publicUrl,
         filename: thumbnailFile
       };
+
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
       };
     }
   }
 
-  private cleanSubtitles(srtContent: string): string {
-    // Remove SRT formatting (timestamps, sequence numbers)
-    const lines = srtContent.split('\n');
-    const textLines: string[] = [];
-    
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
+  async getVideoMetadata(url: string): Promise<VideoMetadata> {
+    try {
+      await this.ensureTempDir();
       
-      // Skip empty lines, sequence numbers, and timestamp lines
-      if (line === '' || /^\d+$/.test(line) || /^\d{2}:\d{2}:\d{2}/.test(line)) {
-        continue;
+      // Ensure yt-dlp is available
+      const ytDlpReady = await this.ensureYtDlp();
+      if (!ytDlpReady) {
+        throw new Error('Failed to install or access yt-dlp. This may be due to system restrictions in the deployment environment. yt-dlp is required for metadata extraction functionality.');
       }
+
+      const args = [
+        '--dump-json',
+        '--no-playlist',
+        url
+      ];
+
+      const result = await this.runYtDlp(args, 60000); // 1 minute timeout for metadata
       
-      // Clean HTML tags and formatting
-      const cleanLine = line
-        .replace(/<[^>]*>/g, '') // Remove HTML tags
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&amp;/g, '&')
-        .replace(/&quot;/g, '"')
-        .trim();
-      
-      if (cleanLine) {
-        textLines.push(cleanLine);
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to get video metadata');
       }
+
+      const ytDlpOutput: YtDlpOutput = JSON.parse(result.output || '{}');
+      
+      return {
+        id: ytDlpOutput.id,
+        title: ytDlpOutput.title,
+        description: ytDlpOutput.description,
+        duration: ytDlpOutput.duration,
+        uploader: ytDlpOutput.uploader,
+        uploadDate: ytDlpOutput.upload_date,
+        viewCount: ytDlpOutput.view_count,
+        likeCount: ytDlpOutput.like_count,
+        thumbnail: ytDlpOutput.thumbnail,
+        webpage_url: ytDlpOutput.webpage_url,
+        extractor: ytDlpOutput.extractor,
+        formats: ytDlpOutput.formats
+      };
+
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : 'Unknown error occurred while getting metadata');
     }
-    
-    return textLines.join(' ').replace(/\s+/g, ' ').trim();
   }
 }
+
