@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import { parseAndValidateConfig } from "@smithery/sdk";
 import { CloudStorageService } from './storage.js';
-import { PracticalVideoDownloaderService } from './downloader.js';
+import { ProfessionalVideoDownloaderService } from './downloader.js';
 import type { CloudStorageConfig } from './types.js';
 
 const app = express();
@@ -37,7 +37,7 @@ type Config = z.infer<typeof configSchema>;
 // Lazy initialization of services
 let services: {
   storage: CloudStorageService;
-  downloader: PracticalVideoDownloaderService;
+  downloader: ProfessionalVideoDownloaderService;
 } | null = null;
 
 function getServices(config: Config) {
@@ -52,7 +52,7 @@ function getServices(config: Config) {
     };
 
     const storage = new CloudStorageService(storageConfig);
-    const downloader = new PracticalVideoDownloaderService(storage);
+    const downloader = new ProfessionalVideoDownloaderService(storage);
 
     services = { storage, downloader };
   }
@@ -489,3 +489,4 @@ app.listen(PORT, () => {
   console.log(`🔗 MCP endpoint: http://localhost:${PORT}/mcp`);
   console.log(`✨ Enhanced features: Instagram GraphQL, Professional optimizations, Multi-platform support`);
 });
+
