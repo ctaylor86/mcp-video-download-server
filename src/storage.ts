@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { readFile, unlink } from 'fs/promises';
 import { basename, extname } from 'path';
@@ -21,6 +21,15 @@ export class CloudStorageService {
       },
       forcePathStyle: true, // Required for some S3-compatible services like Cloudflare R2
     });
+  }
+
+  async testConnection(): Promise<void> {
+    try {
+      const command = new HeadBucketCommand({ Bucket: this.config.bucketName });
+      await this.s3Client.send(command);
+    } catch (error) {
+      throw new Error(`S3 connection test failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   }
 
   async uploadFile(localPath: string, keyPrefix: string = ''): Promise<string> {
