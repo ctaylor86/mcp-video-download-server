@@ -7,6 +7,7 @@ import { parseAndValidateConfig } from "@smithery/sdk";
 import { CloudStorageService } from './storage.js';
 import { ProfessionalVideoDownloaderService } from './downloader.js';
 import type { CloudStorageConfig } from './types.js';
+import { promises as fs } from 'fs';
 
 const app = express();
 const PORT = process.env.PORT || 8081;
@@ -52,7 +53,8 @@ function getServices(config: Config) {
     };
 
     const storage = new CloudStorageService(storageConfig);
-    const downloader = new ProfessionalVideoDownloaderService(storage);
+    // Fix: ProfessionalVideoDownloaderService constructor expects a string (tempDir), not CloudStorageService
+    const downloader = new ProfessionalVideoDownloaderService('/tmp');
 
     services = { storage, downloader };
   }
@@ -83,12 +85,14 @@ function getPlatformTip(platform: string): string {
   return tips[platform as keyof typeof tips] || tips.unknown;
 }
 
-// Helper function to format duration safely
-function formatDuration(duration?: number): string {
-  if (!duration) return 'N/A';
-  const minutes = Math.floor(duration / 60);
-  const seconds = duration % 60;
-  return `${duration} seconds (${minutes}:${String(seconds).padStart(2, '0')})`;
+// Helper function to get file size
+async function getFileSize(filePath: string): Promise<number> {
+  try {
+    const stats = await fs.stat(filePath);
+    return stats.size;
+  } catch {
+    return 0;
+  }
 }
 
 // Create MCP server with your tools
@@ -197,22 +201,30 @@ export default function createServer({
     title: "Download Video to Cloud",
     description: "🎬 Download videos from YouTube, Instagram, TikTok, Facebook, and LinkedIn using professional techniques with 85-95% success rates",
     inputSchema: {
-      url: z.string().describe('Video URL from supported platforms (YouTube, Instagram, TikTok, Facebook, LinkedIn)'),
-      quality: z.string().optional().describe('Video quality preference (e.g., "best", "worst", "720p")')
+      url: z.string().describe('Video URL from supported platforms (YouTube, Instagram, TikTok, Facebook, LinkedIn)')
     }
-  }, async ({ url, quality }: { url: string; quality?: string }) => {
+  }, async ({ url }: { url: string }) => {
     const platform = detectPlatform(url);
     
     try {
-      const { downloader } = getServices(config);
-      const result = await downloader.downloadVideo(url, quality || 'best');
+      const { downloader, storage } = getServices(config);
+      const result = await downloader.downloadVideo(url);
       
-      if (result.success) {
+      if (result.success && result.filePath) {
+        // Get file size before upload
+        const fileSize = await getFileSize(result.filePath);
+        
+        // Upload to cloud storage
+        const publicUrl = await storage.uploadFile(result.filePath, `video_${Date.now()}_`);
+        
+        // Extract filename from the URL or create one
+        const filename = publicUrl.split('/').pop() || `video_${Date.now()}.mp4`;
+        
         return {
           content: [
             {
               type: 'text',
-              text: `✅ Video downloaded successfully!\n\n🎬 Video Details:\n• Title: ${result.metadata?.title || 'Unknown'}\n• Platform: ${platform.toUpperCase()}\n• Duration: ${result.metadata?.duration || 'N/A'} seconds\n• Uploader: ${result.metadata?.uploader || 'Unknown'}\n• Views: ${result.metadata?.viewCount ? result.metadata.viewCount.toLocaleString() : 'N/A'}\n\n📁 File Details:\n• Filename: ${result.filename}\n• Size: ${result.fileSize} bytes\n• URL: ${result.publicUrl}\n\n⚡ Method: Professional ${platform} optimization\n🎯 Success Rate: ${platform === 'instagram' ? '85-90%' : platform === 'youtube' ? '90-95%' : platform === 'tiktok' ? '80-85%' : '70-80%'}`
+              text: `✅ Video downloaded successfully!\n\n🎬 Video Details:\n• Title: ${result.metadata?.title || 'Unknown'}\n• Platform: ${platform.toUpperCase()}\n• Duration: ${result.metadata?.duration || 'N/A'} seconds\n• Uploader: ${result.metadata?.uploader || 'Unknown'}\n• Views: ${result.metadata?.view_count ? result.metadata.view_count.toLocaleString() : 'N/A'}\n\n📁 File Details:\n• Filename: ${filename}\n• Size: ${fileSize} bytes\n• URL: ${publicUrl}\n\n⚡ Method: Professional ${platform} optimization\n🎯 Success Rate: ${platform === 'instagram' ? '85-90%' : platform === 'youtube' ? '90-95%' : platform === 'tiktok' ? '80-85%' : '70-80%'}`
             }
           ]
         };
@@ -249,15 +261,24 @@ export default function createServer({
     const platform = detectPlatform(url);
     
     try {
-      const { downloader } = getServices(config);
+      const { downloader, storage } = getServices(config);
       const result = await downloader.downloadAudio(url);
       
-      if (result.success) {
+      if (result.success && result.filePath) {
+        // Get file size before upload
+        const fileSize = await getFileSize(result.filePath);
+        
+        // Upload to cloud storage
+        const publicUrl = await storage.uploadFile(result.filePath, `audio_${Date.now()}_`);
+        
+        // Extract filename from the URL or create one
+        const filename = publicUrl.split('/').pop() || `audio_${Date.now()}.mp3`;
+        
         return {
           content: [
             {
               type: 'text',
-              text: `✅ Audio extracted successfully!\n\n🎵 Audio Details:\n• Title: ${result.metadata?.title || 'Unknown'}\n• Platform: ${platform.toUpperCase()}\n• Duration: ${result.metadata?.duration || 'N/A'} seconds\n• Uploader: ${result.metadata?.uploader || 'Unknown'}\n\n📁 File Details:\n• Filename: ${result.filename}\n• Size: ${result.fileSize} bytes\n• Format: MP3 (high quality)\n• URL: ${result.publicUrl}\n\n⚡ Method: Professional audio extraction`
+              text: `✅ Audio extracted successfully!\n\n🎵 Audio Details:\n• Title: ${result.metadata?.title || 'Unknown'}\n• Platform: ${platform.toUpperCase()}\n• Duration: ${result.metadata?.duration || 'N/A'} seconds\n• Uploader: ${result.metadata?.uploader || 'Unknown'}\n\n📁 File Details:\n• Filename: ${filename}\n• Size: ${fileSize} bytes\n• Format: MP3 (high quality)\n• URL: ${publicUrl}\n\n⚡ Method: Professional audio extraction`
             }
           ]
         };
@@ -283,97 +304,6 @@ export default function createServer({
     }
   });
 
-  // Extract transcript to cloud tool
-  server.registerTool("extract_transcript_to_cloud", {
-    title: "Extract Transcript to Cloud",
-    description: "📝 Extract transcript/subtitles from videos with automatic language detection",
-    inputSchema: {
-      url: z.string().describe('Video URL to extract transcript from'),
-      language: z.string().optional().describe('Language code for subtitles (e.g., "en", "es")')
-    }
-  }, async ({ url, language }: { url: string; language?: string }) => {
-    const platform = detectPlatform(url);
-    
-    try {
-      const { downloader } = getServices(config);
-      const result = await downloader.extractTranscript(url, language || 'en');
-      
-      if (result.success) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `✅ Transcript extracted successfully!\n\n📝 Transcript Details:\n• Platform: ${platform.toUpperCase()}\n• Language: ${result.language || 'auto-detected'}\n• Length: ${result.transcript ? result.transcript.length : 'N/A'} characters\n\n📁 File Details:\n• Filename: ${result.filename}\n• URL: ${result.publicUrl}\n\n📖 Preview:\n${result.transcript ? result.transcript.substring(0, 200) + '...' : 'Transcript content available at URL'}\n\n💡 Note: Transcript quality depends on platform's subtitle availability`
-            }
-          ]
-        };
-      } else {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `❌ Transcript extraction failed: ${result.error}\n\n📱 Platform: ${platform.toUpperCase()}\n💡 Tip: Not all videos have transcripts available. ${getPlatformTip(platform)}`
-            }
-          ]
-        };
-      }
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `❌ Error extracting transcript: ${error instanceof Error ? error.message : 'Unknown error'}\n\n📱 Platform: ${platform.toUpperCase()}`
-          }
-        ]
-      };
-    }
-  });
-
-  // Extract thumbnail to cloud tool
-  server.registerTool("extract_thumbnail_to_cloud", {
-    title: "Extract Thumbnail to Cloud",
-    description: "🖼️ Extract high-quality thumbnail images from videos",
-    inputSchema: {
-      url: z.string().describe('Video URL to extract thumbnail from')
-    }
-  }, async ({ url }: { url: string }) => {
-    const platform = detectPlatform(url);
-    
-    try {
-      const { downloader } = getServices(config);
-      const result = await downloader.extractThumbnail(url);
-      
-      if (result.success) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `✅ Thumbnail extracted successfully!\n\n🖼️ Image Details:\n• Platform: ${platform.toUpperCase()}\n• Format: High-quality image\n\n📁 File Details:\n• Filename: ${result.filename}\n• URL: ${result.publicUrl}\n\n⚡ Method: Professional thumbnail extraction`
-            }
-          ]
-        };
-      } else {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `❌ Thumbnail extraction failed: ${result.error}\n\n📱 Platform: ${platform.toUpperCase()}\n💡 Tip: ${getPlatformTip(platform)}`
-            }
-          ]
-        };
-      }
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `❌ Error extracting thumbnail: ${error instanceof Error ? error.message : 'Unknown error'}\n\n📱 Platform: ${platform.toUpperCase()}`
-          }
-        ]
-      };
-    }
-  });
-
   // Get video metadata tool
   server.registerTool("get_video_metadata", {
     title: "Get Video Metadata",
@@ -386,20 +316,32 @@ export default function createServer({
     
     try {
       const { downloader } = getServices(config);
-      const metadata = await downloader.getVideoMetadata(url);
+      const result = await downloader.getVideoMetadata(url);
       
-      const durationFormatted = formatDuration(metadata.duration);
-      const isPopular = metadata.viewCount && metadata.viewCount > 100000;
-      const isLongForm = metadata.duration && metadata.duration > 300;
-      
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `📊 Video Metadata Analysis\n\n🎬 Content Information:\n• Title: ${metadata.title}\n• Platform: ${platform.toUpperCase()}\n• Duration: ${durationFormatted}\n• Uploader: ${metadata.uploader}\n• Views: ${metadata.viewCount?.toLocaleString() || 'N/A'}\n• Upload Date: ${metadata.uploadDate || 'N/A'}\n\n🔧 Technical Details:\n• Video ID: ${metadata.id}\n• Extractor: ${metadata.extractor}\n• Platform Success Rate: ${platform === 'instagram' ? '85-90%' : platform === 'youtube' ? '90-95%' : platform === 'tiktok' ? '80-85%' : '70-80%'}\n\n📝 Description:\n${metadata.description ? metadata.description.substring(0, 300) + (metadata.description.length > 300 ? '...' : '') : 'No description available'}\n\n💡 Analysis: Content appears to be ${isPopular ? 'popular' : 'standard'} with ${isLongForm ? 'long-form' : 'short-form'} format`
-          }
-        ]
-      };
+      if (result.success && result.metadata) {
+        const metadata = result.metadata;
+        const durationFormatted = metadata.duration ? `${metadata.duration} seconds (${Math.floor(metadata.duration / 60)}:${String(metadata.duration % 60).padStart(2, '0')})` : 'N/A';
+        const isPopular = metadata.view_count && metadata.view_count > 100000;
+        const isLongForm = metadata.duration && metadata.duration > 300;
+        
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `📊 Video Metadata Analysis\n\n🎬 Content Information:\n• Title: ${metadata.title}\n• Platform: ${platform.toUpperCase()}\n• Duration: ${durationFormatted}\n• Uploader: ${metadata.uploader}\n• Views: ${metadata.view_count?.toLocaleString() || 'N/A'}\n• Upload Date: ${metadata.upload_date || 'N/A'}\n\n🔧 Technical Details:\n• Platform: ${metadata.platform}\n• Quality: ${metadata.quality || 'N/A'}\n• Platform Success Rate: ${platform === 'instagram' ? '85-90%' : platform === 'youtube' ? '90-95%' : platform === 'tiktok' ? '80-85%' : '70-80%'}\n\n📝 Description:\n${metadata.description ? metadata.description.substring(0, 300) + (metadata.description.length > 300 ? '...' : '') : 'No description available'}\n\n💡 Analysis: Content appears to be ${isPopular ? 'popular' : 'standard'} with ${isLongForm ? 'long-form' : 'short-form'} format`
+            }
+          ]
+        };
+      } else {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `❌ Error getting video metadata: ${result.error}\n\n📱 Platform: ${platform.toUpperCase()}\n💡 Tip: ${getPlatformTip(platform)}`
+            }
+          ]
+        };
+      }
     } catch (error) {
       return {
         content: [
